@@ -1,0 +1,361 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --------------------------------------------------
+// ENUMS
+// --------------------------------------------------
+
+enum Role {
+  PROFESSOR
+  ALUNO
+}
+
+enum Shift {
+  MATUTINO
+  VESPERTINO
+  NOTURNO
+  INTEGRAL
+}
+
+enum ActivityType {
+  QUIZ_INTERATIVO
+  AVALIAÇAO
+  ATIVIDADE
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE // 4 opções coloridas padrão
+  TRUE_FALSE      // Verdadeiro ou Falso (2 botões)
+  FAST_ANSWER     // Resposta Rápida (Digitação)
+  SLIDER          // Controle Deslizante Numérico
+  PUZZLE          // Quebra-Cabeça / Ordenação Sequencial
+}
+
+// ⚡ NOVO: Status de Frequência do Aluno
+enum AttendanceStatus {
+  PRESENTE
+  FALTA
+  JUSTIFICADO
+}
+
+// --------------------------------------------------
+// BASE ACADÊMICA E USUÁRIOS
+// --------------------------------------------------
+
+model User {
+  id                  String       @id @default(uuid())
+  name                String
+  email               String       @unique
+  passwordHash        String
+  role                Role         @default(ALUNO)
+  createdAt           DateTime     @default(now())
+  resetPasswordToken  String?
+  resetPasswordExpire DateTime?
+  
+  enrollments         Enrollment[]
+  studentAnswers      StudentAnswer[]
+  examSubmissions     ExamSubmission[]
+  attendances         Attendance[] // ⚡ Relação com as chamadas/frequências do aluno
+
+  // Relações do Docente/Instrutor
+  createdInstitutions Institution[] @relation("TeacherInstitutions")
+  createdClasses      Class[]       @relation("TeacherClasses")
+  createdQuizzes      Quiz[]        @relation("TeacherQuizzes")
+
+  @@map("users")
+}
+
+// Módulo de Instituições de Ensino (Escolas, Senai, Empresas, etc.)
+model Institution {
+  id          String   @id @default(uuid())
+  name        String
+  location    String?  // Cidade, Endereço ou Polo
+  description String?  
+  
+  teacherId   String
+  teacher     User     @relation("TeacherInstitutions", fields: [teacherId], references: [id], onDelete: Cascade)
+
+  courses     Course[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("institutions")
+}
+
+model Course {
+  id            String      @id @default(uuid())
+  name          String
+  workload      Int
+  
+  institutionId String
+  institution   Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+
+  classes       Class[]
+
+  @@map("courses")
+}
+
+model Lesson {
+  id          String   @id @default(uuid())
+  subjectId   String
+  subject     Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  
+  classId     String?  
+  class       Class?   @relation(fields: [classId], references: [id], onDelete: SetNull)
+  
+  title       String
+  description String?
+  fileUrl     String?  // Caminho ou URL do slide (PDF/Imagem)
+  createdAt   DateTime @default(now())
+
+  @@map("lessons")
+}
+
+model Class {
+  id              String           @id @default(uuid())
+  code            String
+  courseId        String
+  course          Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons         Lesson[]
+  
+  // Vínculo do Instrutor da Turma
+  teacherId       String?
+  teacher         User?            @relation("TeacherClasses", fields: [teacherId], references: [id], onDelete: SetNull)
+
+  modules         ClassModule[]
+  enrollments     Enrollment[]
+  quizSessions    QuizSession[]
+  examSubmissions ExamSubmission[]
+  attendances     Attendance[]     // ⚡ Relação com a frequência da turma
+
+  @@map("classes")
+}
+
+model Room {
+  id          String   @id @default(uuid())
+  name        String   @unique // Ex: Laboratório 01, Oficina de Solda
+  capacity    Int?     // Capacidade de alunos
+  description String?  // Detalhes dos equipamentos disponíveis
+  createdAt   DateTime @default(now())
+
+  @@map("rooms")
+}
+
+model Subject {
+  id       String        @id @default(uuid())
+  name     String
+  workload Int
+  lessons  Lesson[]
+  
+  modules  ClassModule[]
+  quizzes  Quiz[]
+
+  @@map("subjects")
+}
+
+model ClassModule {
+  id        String   @id @default(uuid())
+  classId   String
+  subjectId String
+  room      String   // Sala / Ambiente de Aula
+  shift     Shift    @default(MATUTINO)
+  startTime String
+  endTime   String
+  startDate DateTime
+  endDate   DateTime
+
+  class     Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@map("class_modules")
+}
+
+model Enrollment {
+  id        String   @id @default(uuid())
+  userId    String
+  classId   String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class     Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, classId])
+  @@map("enrollments")
+}
+
+// ⚡ NOVO MODELO: Tabela de Diário de Classe / Frequência
+model Attendance {
+  id        String           @id @default(uuid())
+  classId   String
+  userId    String
+  date      DateTime         // Data da chamada (dia da aula)
+  status    AttendanceStatus @default(PRESENTE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  class     Class            @relation(fields: [classId], references: [id], onDelete: Cascade)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([classId, userId, date]) // Garante apenas um registro por aluno por turma/dia
+  @@map("attendances")
+}
+
+// --------------------------------------------------
+// QUIZZES, ATIVIDADES E AVALIAÇÕES
+// --------------------------------------------------
+
+model Quiz {
+  id              String       @id @default(uuid())
+  title           String
+  description     String?
+  type            ActivityType @default(QUIZ_INTERATIVO)
+  durationMinutes Int          @default(45) // Tempo total global para Avaliações Formais
+
+  // ⚡ Novos campos para o Repositório Global de Questões
+  isPublic        Boolean      @default(false)
+  knowledgeArea   String?      // Ex: "Segurança do Trabalho", "Mecânica Pesada", "Logística"
+  tags            String[]     // Ex: ["nr-12", "inspecao", "diesel"]
+
+  subjectId       String
+  subject         Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  // Vínculo do Instrutor criador do Quiz
+  teacherId       String?
+  teacher         User?        @relation("TeacherQuizzes", fields: [teacherId], references: [id], onDelete: SetNull)
+
+  questions       Question[]
+  sessions        QuizSession[]
+  examSubmissions ExamSubmission[]
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@map("quizzes")
+}
+
+model Question {
+  id               String       @id @default(uuid())
+  quizId           String
+  quiz             Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  type             QuestionType @default(MULTIPLE_CHOICE)
+  title            String
+  imageUrl         String?      // Imagem ilustrativa da pergunta (Base64 ou URL)
+  timeLimitSeconds Int          @default(30)
+  points           Int          @default(1000)
+  weight           Float        @default(1.0) // Peso da questão na Avaliação Formal
+  justification    String?      // Comentário / Justificativa pedagógica do gabarito
+  order            Int          @default(1)
+
+  sliderConfig     Json?
+
+  options          QuestionOption[]
+  answers          StudentAnswer[]
+  examAnswers      ExamAnswer[]
+
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@map("questions")
+}
+
+model QuestionOption {
+  id           String   @id @default(uuid())
+  questionId   String
+  question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  text         String
+  color        String?  // 'red', 'blue', 'yellow', 'green'
+  isCorrect    Boolean  @default(false)
+
+  // Usado em PUZZLE (posição correta 1 a 4) ou FAST_ANSWER
+  correctOrder Int?
+
+  createdAt    DateTime @default(now())
+
+  @@map("question_options")
+}
+
+model QuizSession {
+  id        String          @id @default(uuid())
+  pinCode   String?         @unique
+  quizId    String
+  quiz      Quiz            @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  classId   String
+  class     Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  isLive    Boolean         @default(true)
+  startedAt DateTime        @default(now())
+  endedAt   DateTime?
+
+  answers   StudentAnswer[]
+
+  @@map("quiz_sessions")
+}
+
+model StudentAnswer {
+  id               String      @id @default(uuid())
+  sessionId        String
+  session          QuizSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId       String
+  question         Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  selectedOptionId String?
+  textAnswer       String?
+  numericValue     Float?
+  puzzleOrder      Json?
+
+  isCorrect        Boolean
+  scoreEarned      Int         @default(0)
+  timeRemaining    Int
+
+  createdAt        DateTime    @default(now())
+
+  @@map("student_answers")
+}
+
+// --------------------------------------------------
+// SUBMISSÕES E GABARITOS DE AVALIAÇÕES FORMAIS
+// --------------------------------------------------
+
+model ExamSubmission {
+  id               String       @id @default(uuid())
+  quizId           String
+  quiz             Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  classId          String
+  class            Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  totalScore       Float        // Nota final calculada de 0.0 a 10.0
+  totalCorrect     Int
+  totalQuestions   Int
+  isApproved       Boolean      @default(false)
+  timeSpentSeconds Int          @default(0)
+  submittedAt      DateTime     @default(now())
+
+  answers          ExamAnswer[]
+
+  @@map("exam_submissions")
+}
+
+model ExamAnswer {
+  id            String         @id @default(uuid())
+  submissionId  String
+  submission    ExamSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  questionId    String
+  question      Question       @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  studentAnswer String         // Valor, índice ou texto submetido pelo aluno
+  isCorrect     Boolean
+  pointsAwarded Float          // Pontos atribuídos conforme o peso da questão
+
+  @@map("exam_answers")
+}
