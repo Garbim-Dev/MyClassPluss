@@ -36,7 +36,7 @@ enum QuestionType {
   PUZZLE          // Quebra-Cabeça / Ordenação Sequencial
 }
 
-// ⚡ NOVO: Status de Frequência do Aluno
+// ⚡ Status de Frequência do Aluno
 enum AttendanceStatus {
   PRESENTE
   FALTA
@@ -48,24 +48,25 @@ enum AttendanceStatus {
 // --------------------------------------------------
 
 model User {
-  id                  String       @id @default(uuid())
+  id                  String           @id @default(uuid())
   name                String
-  email               String       @unique
+  email               String           @unique
   passwordHash        String
-  role                Role         @default(ALUNO)
-  createdAt           DateTime     @default(now())
+  role                Role             @default(ALUNO)
+  createdAt           DateTime         @default(now())
   resetPasswordToken  String?
   resetPasswordExpire DateTime?
   
   enrollments         Enrollment[]
   studentAnswers      StudentAnswer[]
   examSubmissions     ExamSubmission[]
-  attendances         Attendance[] // ⚡ Relação com as chamadas/frequências do aluno
+  attendances         Attendance[]     // ⚡ Relação com as chamadas/frequências do aluno
 
   // Relações do Docente/Instrutor
-  createdInstitutions Institution[] @relation("TeacherInstitutions")
-  createdClasses      Class[]       @relation("TeacherClasses")
-  createdQuizzes      Quiz[]        @relation("TeacherQuizzes")
+  createdInstitutions Institution[]    @relation("TeacherInstitutions")
+  createdClasses      Class[]          @relation("TeacherClasses")
+  createdQuizzes      Quiz[]           @relation("TeacherQuizzes")
+  personalQuestions   PersonalQuestion[] @relation("TeacherPersonalQuestions") // ⚡ Contraparte adicionada
 
   @@map("users")
 }
@@ -188,7 +189,7 @@ model Enrollment {
   @@map("enrollments")
 }
 
-// ⚡ NOVO MODELO: Tabela de Diário de Classe / Frequência
+// ⚡ Tabela de Diário de Classe / Frequência
 model Attendance {
   id        String           @id @default(uuid())
   classId   String
@@ -201,7 +202,7 @@ model Attendance {
   class     Class            @relation(fields: [classId], references: [id], onDelete: Cascade)
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([classId, userId, date]) // Garante apenas um registro por aluno por turma/dia
+  @@unique([classId, userId, date])
   @@map("attendances")
 }
 
@@ -210,47 +211,46 @@ model Attendance {
 // --------------------------------------------------
 
 model Quiz {
-  id              String       @id @default(uuid())
+  id              String           @id @default(uuid())
   title           String
   description     String?
-  type            ActivityType @default(QUIZ_INTERATIVO)
-  durationMinutes Int          @default(45) // Tempo total global para Avaliações Formais
+  type            ActivityType     @default(QUIZ_INTERATIVO)
+  durationMinutes Int              @default(45)
 
-  // ⚡ Novos campos para o Repositório Global de Questões
-  isPublic        Boolean      @default(false)
-  knowledgeArea   String?      // Ex: "Segurança do Trabalho", "Mecânica Pesada", "Logística"
-  tags            String[]     // Ex: ["nr-12", "inspecao", "diesel"]
+  // ⚡ Repositório Global de Questões
+  isPublic        Boolean          @default(false)
+  knowledgeArea   String?          // Ex: "Segurança do Trabalho", "Mecânica Pesada", "Logística"
+  tags            String[]         // Ex: ["nr-12", "inspecao", "diesel"]
 
   subjectId       String
-  subject         Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  subject         Subject          @relation(fields: [subjectId], references: [id], onDelete: Cascade)
 
-  // Vínculo do Instrutor criador do Quiz
   teacherId       String?
-  teacher         User?        @relation("TeacherQuizzes", fields: [teacherId], references: [id], onDelete: SetNull)
+  teacher         User?            @relation("TeacherQuizzes", fields: [teacherId], references: [id], onDelete: SetNull)
 
   questions       Question[]
   sessions        QuizSession[]
   examSubmissions ExamSubmission[]
 
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   @@map("quizzes")
 }
 
 model Question {
-  id               String       @id @default(uuid())
+  id               String           @id @default(uuid())
   quizId           String
-  quiz             Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  quiz             Quiz             @relation(fields: [quizId], references: [id], onDelete: Cascade)
 
-  type             QuestionType @default(MULTIPLE_CHOICE)
+  type             QuestionType     @default(MULTIPLE_CHOICE)
   title            String
-  imageUrl         String?      // Imagem ilustrativa da pergunta (Base64 ou URL)
-  timeLimitSeconds Int          @default(30)
-  points           Int          @default(1000)
-  weight           Float        @default(1.0) // Peso da questão na Avaliação Formal
-  justification    String?      // Comentário / Justificativa pedagógica do gabarito
-  order            Int          @default(1)
+  imageUrl         String?
+  timeLimitSeconds Int              @default(30)
+  points           Int              @default(1000)
+  weight           Float            @default(1.0)
+  justification    String?
+  order            Int              @default(1)
 
   sliderConfig     Json?
 
@@ -258,8 +258,8 @@ model Question {
   answers          StudentAnswer[]
   examAnswers      ExamAnswer[]
 
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   @@map("questions")
 }
@@ -270,15 +270,36 @@ model QuestionOption {
   question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
 
   text         String
-  color        String?  // 'red', 'blue', 'yellow', 'green'
+  color        String?
   isCorrect    Boolean  @default(false)
-
-  // Usado em PUZZLE (posição correta 1 a 4) ou FAST_ANSWER
   correctOrder Int?
 
   createdAt    DateTime @default(now())
 
   @@map("question_options")
+}
+
+// ⚡ BANCO DE QUESTÕES PESSOAL DO PROFESSOR (COM TAGS E FAVORITOS)
+model PersonalQuestion {
+  id            String   @id @default(uuid())
+  teacherId     String
+  title         String
+  imageUrl      String?
+  type          String   @default("MULTIPLE_CHOICE")
+  weight        Float    @default(2.5)
+  justification String?
+  tags          String[] @default([])
+  isFavorite    Boolean  @default(false)
+  options       Json?
+  sliderConfig  Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  teacher       User     @relation("TeacherPersonalQuestions", fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@index([teacherId])
+  @@index([isFavorite])
+  @@map("personal_questions")
 }
 
 model QuizSession {
@@ -321,10 +342,6 @@ model StudentAnswer {
   @@map("student_answers")
 }
 
-// --------------------------------------------------
-// SUBMISSÕES E GABARITOS DE AVALIAÇÕES FORMAIS
-// --------------------------------------------------
-
 model ExamSubmission {
   id               String       @id @default(uuid())
   quizId           String
@@ -334,7 +351,7 @@ model ExamSubmission {
   classId          String
   class            Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
 
-  totalScore       Float        // Nota final calculada de 0.0 a 10.0
+  totalScore       Float
   totalCorrect     Int
   totalQuestions   Int
   isApproved       Boolean      @default(false)
@@ -353,9 +370,9 @@ model ExamAnswer {
   questionId    String
   question      Question       @relation(fields: [questionId], references: [id], onDelete: Cascade)
 
-  studentAnswer String         // Valor, índice ou texto submetido pelo aluno
+  studentAnswer String
   isCorrect     Boolean
-  pointsAwarded Float          // Pontos atribuídos conforme o peso da questão
+  pointsAwarded Float
 
   @@map("exam_answers")
 }

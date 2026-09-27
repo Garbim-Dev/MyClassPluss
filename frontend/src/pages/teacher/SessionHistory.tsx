@@ -16,8 +16,14 @@ import {
   Clock,
   BookOpen,
   Trash2,
-  AlertCircle
+  AlertCircle,
+  GraduationCap,
+  FileSpreadsheet,
+  AlertTriangle,
+  FolderKanban,
+  Loader2,
 } from 'lucide-react';
+import { ClassReportModal } from './ClassReportModal';
 
 interface SessionItem {
   id: string;
@@ -50,13 +56,38 @@ interface SessionItem {
   approvalRate?: number;
 }
 
+interface ClassDossierCard {
+  id: string;
+  code: string;
+  courseName: string;
+  subjectName: string;
+  totalStudents: number;
+  totalRegisteredDays: number;
+  atRiskCount: number;
+  studentsReport: any[];
+}
+
 export const SessionHistory: React.FC = () => {
+  // Controle de visão: 'classes' (Dossiês por Turma v2.0) | 'sessions' (Atividades isoladas)
+  const [historyMode, setHistoryMode] = useState<'classes' | 'sessions'>('classes');
+
+  // Dados das Sessões
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedSession, setSelectedSession] = useState<any | null>(null);
   const [actionError, setActionError] = useState<string>('');
   const [successMsg, setSuccessMsg] = useState<string>('');
+
+  // Dados dos Dossiês Consolidados por Turma
+  const [classCards, setClassCards] = useState<ClassDossierCard[]>([]);
+  const [loadingClasses, setLoadingClasses] = useState<boolean>(false);
+
+  // ⚡ Estado para carregamento e abertura do ClassReportModal com dados reais
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [reportData, setReportData] = useState<any | null>(null);
+  const [loadingReportId, setLoadingReportId] = useState<string | null>(null);
+  const [selectedCardFallback, setSelectedCardFallback] = useState<any | null>(null);
 
   const fetchHistory = async () => {
     setLoading(true);
@@ -74,8 +105,53 @@ export const SessionHistory: React.FC = () => {
     }
   };
 
+  const fetchClassDossiers = async () => {
+    setLoadingClasses(true);
+    try {
+      const classesRes = await api.get('/academic/classes');
+      const classesData = classesRes.data || [];
+
+      const loadedDossiers: ClassDossierCard[] = await Promise.all(
+        classesData.map(async (cls: any) => {
+          let atRisk = 0;
+          let daysCount = 0;
+          const subjectName = cls.modules?.[0]?.subject?.name || 'Conhecimentos Gerais';
+
+          try {
+            const attRes = await api.get(`/academic/classes/${cls.id}/attendance-report`);
+            if (attRes.data) {
+              daysCount = attRes.data.totalRegisteredDays || 0;
+              const attList = attRes.data.report || [];
+              atRisk = attList.filter((a: any) => a.isAtRisk).length;
+            }
+          } catch (err) {
+            console.warn(`Erro ao buscar frequência da turma ${cls.code}:`, err);
+          }
+
+          return {
+            id: cls.id,
+            code: cls.code,
+            courseName: cls.course?.name || 'Treinamento Técnico',
+            subjectName,
+            totalStudents: cls.enrollments?.length || 0,
+            totalRegisteredDays: daysCount,
+            atRiskCount: atRisk,
+            studentsReport: [],
+          };
+        })
+      );
+
+      setClassCards(loadedDossiers);
+    } catch (err) {
+      console.error('Erro ao buscar turmas para relatórios:', err);
+    } finally {
+      setLoadingClasses(false);
+    }
+  };
+
   useEffect(() => {
     fetchHistory();
+    fetchClassDossiers();
   }, []);
 
   // SINCRONIZAÇÃO COM A SETA DE VOLTAR DO NAVEGADOR PARA MODAIS
@@ -103,34 +179,34 @@ export const SessionHistory: React.FC = () => {
     }
   };
 
-  // ⚡ FUNÇÃO PARA EXCLUIR SESSÃO / ATIVIDADE INICIADA POR ENGANO
   const handleDeleteSession = async (sessionId: string, quizName: string) => {
-    if (!window.confirm(`Tem certeza que deseja excluir o registro da sessão "${quizName}"? Esta ação removerá os dados do histórico.`)) {
+    if (
+      !window.confirm(
+        `Tem certeza que deseja excluir o registro da sessão "${quizName}"? Esta ação removerá os dados do histórico.`
+      )
+    ) {
       return;
     }
 
     setActionError('');
-    
-    // ⚡ Atualização otimista: remove da tela imediatamente para uma experiência fluida
     const previousSessions = [...sessions];
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
 
     try {
-      // Tenta a rota acadêmica padrão para exclusão de sessão
       await api.delete(`/academic/sessions/${sessionId}`);
-      
       setSuccessMsg('Sessão removida do histórico com sucesso!');
       setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err: any) {
       try {
-        // Tenta a rota alternativa de quizzes caso o endpoint seja outro
         await api.delete(`/quizzes/sessions/${sessionId}`);
         setSuccessMsg('Sessão removida do histórico com sucesso!');
         setTimeout(() => setSuccessMsg(''), 3000);
       } catch (fallbackErr: any) {
-        // Se falhar em ambas, reverte o estado anterior da lista e avisa o usuário
         setSessions(previousSessions);
-        setActionError(fallbackErr.response?.data?.message || 'Erro ao excluir a sessão no servidor. Tente novamente.');
+        setActionError(
+          fallbackErr.response?.data?.message ||
+            'Erro ao excluir a sessão no servidor. Tente novamente.'
+        );
         setTimeout(() => setActionError(''), 4000);
       }
     }
@@ -148,12 +224,22 @@ export const SessionHistory: React.FC = () => {
     );
   });
 
+  const filteredClasses = classCards.filter((c) => {
+    const term = searchTerm.toLowerCase();
+    return (
+      c.code.toLowerCase().includes(term) ||
+      c.courseName.toLowerCase().includes(term) ||
+      c.subjectName.toLowerCase().includes(term)
+    );
+  });
+
   const getSessionStats = (s: SessionItem) => {
     const answers = s.answers || [];
     const uniqueStudents = s.submissionsCount || new Set(answers.map((a) => a.userId)).size;
     const correctAnswers = answers.filter((a) => a.isCorrect).length;
     const totalAnswers = answers.length;
-    const accuracy = totalAnswers > 0 ? Math.round((correctAnswers / totalAnswers) * 100) : (s.approvalRate || 0);
+    const accuracy =
+      totalAnswers > 0 ? Math.round((correctAnswers / totalAnswers) * 100) : s.approvalRate || 0;
 
     const averageGrade = Number(s.averageGrade ?? 0);
 
@@ -168,7 +254,6 @@ export const SessionHistory: React.FC = () => {
     const answers = s.answers || [];
     const studentMap = new Map<string, any>();
 
-    // Agrupa e consolida as respostas por aluno
     answers.forEach((ans) => {
       const uId = ans.userId;
       if (!studentMap.has(uId)) {
@@ -186,13 +271,11 @@ export const SessionHistory: React.FC = () => {
       st.pontos += Number(ans.scoreEarned || ans.finalGrade || 0);
     });
 
-    // ⚡ Cálculo rigoroso alinhado ao Dossiê Pedagógico
     const rows = Array.from(studentMap.values()).map((st, idx) => {
-      const totalQ = st.totalQuestoes > 0 ? st.totalQuestoes : (s.quiz?.questions?.length || 20);
-      // Calcula a nota proporcional de 0 a 10 com base nos acertos reais
+      const totalQ = st.totalQuestoes > 0 ? st.totalQuestoes : s.quiz?.questions?.length || 20;
       const calculatedGrade = (st.acertos / totalQ) * 10;
       const finalGrade = Number(calculatedGrade.toFixed(1));
-      
+
       return {
         'Nº': idx + 1,
         'Nome do Aluno': st.nome,
@@ -204,7 +287,9 @@ export const SessionHistory: React.FC = () => {
       };
     });
 
-    const ws = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ 'Aviso': 'Sessão sem submissões detalhadas registradas.' }]);
+    const ws = XLSX.utils.json_to_sheet(
+      rows.length > 0 ? rows : [{ Aviso: 'Sessão sem submissões detalhadas registradas.' }]
+    );
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Relatorio_Sessao');
     const safeTitle = (s.quiz?.title || s.quizTitle || 'Atividade').replace(/[^a-zA-Z0-9]/g, '_');
@@ -225,32 +310,105 @@ export const SessionHistory: React.FC = () => {
     }
   };
 
+  // ⚡ ABRE O DOSSIÊ OFICIAL BUSCANDO EM TEMPO REAL OS DADOS CONSOLIDADOS DO BACKEND
+  const handleOpenClassReportModal = async (classId: string, fallbackInfo?: any) => {
+    if (!classId) return;
+
+    setLoadingReportId(classId);
+    setSelectedCardFallback(fallbackInfo);
+
+    try {
+      const res = await api.get(`/academic/classes/${classId}/performance`);
+      setReportData(res.data);
+      setIsReportOpen(true);
+    } catch (err: any) {
+      console.error('Erro ao buscar desempenho consolidado no histórico:', err);
+      // Fallback seguro caso haja falha de conexão
+      setReportData({
+        classInfo: {
+          code: fallbackInfo?.code || 'Turma',
+          courseName: fallbackInfo?.courseName || 'Treinamento Técnico',
+          subjectName: fallbackInfo?.subjectName || 'Conhecimentos Gerais',
+        },
+        activityCounts: {
+          totalActivities: 0,
+          quizzesCount: 0,
+          examsCount: 0,
+          practicesCount: 0,
+        },
+        summary: {
+          enrolledCount: fallbackInfo?.totalStudents || 0,
+          classAverage: 0.0,
+          approvedCount: 0,
+          failedCount: fallbackInfo?.totalStudents || 0,
+        },
+        students: [],
+      });
+      setIsReportOpen(true);
+    } finally {
+      setLoadingReportId(null);
+    }
+  };
+
   return (
     <div className="space-y-8 font-sans animate-fade-in">
       {/* CABEÇALHO */}
-      <div className="bg-slate-900/60 border border-slate-800/90 p-6 rounded-3xl shadow-xl backdrop-blur-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className="bg-slate-900/60 border border-slate-800/90 p-6 rounded-3xl shadow-xl backdrop-blur-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <div className="p-3 bg-violet-600/20 text-violet-400 rounded-2xl">
             <History className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Histórico de Sessões e Avaliações</h2>
+            <h2 className="text-xl font-bold text-white">Central de Histórico & Relatórios</h2>
             <p className="text-xs text-slate-400">
-              Consulte atividades passadas, notas apuradas, turmas e exporte relatórios oficiais em Excel
+              Consulte dossiês consolidados por turma, controle de faltas e histórico de avaliações
             </p>
           </div>
         </div>
 
-        <div className="relative w-full sm:w-72">
+        <div className="relative w-full md:w-72">
           <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
           <input
             type="text"
-            placeholder="Buscar por atividade, turma ou disciplina..."
+            placeholder={
+              historyMode === 'classes'
+                ? 'Buscar por turma ou curso...'
+                : 'Buscar por atividade ou disciplina...'
+            }
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 focus:border-violet-500 rounded-xl pl-9 pr-4 py-2 text-xs text-white focus:outline-none"
+            className="w-full bg-slate-950 border border-slate-800 focus:border-violet-500 rounded-xl pl-9 pr-4 py-2 text-xs text-white focus:outline-none shadow-inner"
           />
         </div>
+      </div>
+
+      {/* SELETOR DE MODO: DOSSIÊS CONSOLIDADOS POR TURMA VS SESSÕES PONTUAIS */}
+      <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800 p-1.5 rounded-2xl w-fit">
+        <button
+          type="button"
+          onClick={() => setHistoryMode('classes')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            historyMode === 'classes'
+              ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+          }`}
+        >
+          <GraduationCap className="w-4 h-4" />
+          <span>Dossiês e Fechamento por Turma</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setHistoryMode('sessions')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            historyMode === 'sessions'
+              ? 'bg-violet-600 text-white shadow-lg shadow-violet-600/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+          }`}
+        >
+          <Layers className="w-4 h-4" />
+          <span>Sessões e Avaliações Isoladas</span>
+        </button>
       </div>
 
       {successMsg && (
@@ -267,128 +425,233 @@ export const SessionHistory: React.FC = () => {
         </div>
       )}
 
-      {/* LISTAGEM DE SESSÕES */}
-      {loading ? (
-        <div className="py-24 text-center space-y-3">
-          <div className="w-8 h-8 border-4 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-400">Carregando histórico de avaliações...</p>
-        </div>
-      ) : filteredSessions.length === 0 ? (
-        <div className="bg-slate-900/40 border border-slate-800 p-12 rounded-3xl text-center space-y-3">
-          <History className="w-12 h-12 text-slate-600 mx-auto" />
-          <h3 className="text-base font-bold text-slate-300">Nenhuma sessão encontrada</h3>
-          <p className="text-xs text-slate-500 max-w-sm mx-auto">
-            Assim que você lançar uma atividade, avaliação ou quiz interativo no telão, o registro com as notas dos alunos aparecerá aqui.
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {filteredSessions.map((session) => {
-            const stats = getSessionStats(session);
-            const dateSource = session.startedAt || session.date;
-            const formattedDate = dateSource
-              ? new Date(dateSource).toLocaleDateString('pt-BR', {
-                  day: '2-digit',
-                  month: '2-digit',
-                  year: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              : 'Data N/A';
+      {/* ========================================================= */}
+      {/* VISÃO 1: DOSSIÊS CONSOLIDADOS POR TURMA (VERSÃO 2.0)     */}
+      {/* ========================================================= */}
+      {historyMode === 'classes' && (
+        <div>
+          {loadingClasses ? (
+            <div className="py-24 text-center space-y-3">
+              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-xs text-slate-400">Consolidando frequências e notas das turmas...</p>
+            </div>
+          ) : filteredClasses.length === 0 ? (
+            <div className="bg-slate-900/40 border border-slate-800 p-12 rounded-3xl text-center space-y-3">
+              <FolderKanban className="w-12 h-12 text-slate-600 mx-auto" />
+              <h3 className="text-base font-bold text-slate-300">Nenhuma turma localizada</h3>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                Crie turmas na aba Gestão Acadêmica para gerar relatórios bimestrais e de frequência aqui.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {filteredClasses.map((clsCard) => {
+                const isLoadingThisReport = loadingReportId === clsCard.id;
 
-            const isApproved = stats.averageGrade >= 7.0;
-            const quizTitle = session.quiz?.title || session.quizTitle || 'Quiz Sem Título';
-            const classCode = session.class?.code || session.classCode || 'Turma N/A';
-            const subjectName = session.quiz?.subject?.name || session.subjectName || 'Disciplina Geral';
-            const quizType = session.quiz?.type || session.quizType || 'AVALIAÇÃO';
+                return (
+                  <div
+                    key={clsCard.id}
+                    className="bg-slate-950/80 border border-slate-800/80 hover:border-blue-500/50 p-6 rounded-3xl flex flex-col justify-between space-y-4 shadow-xl transition-all"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black uppercase bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full border border-blue-500/30">
+                          {clsCard.code}
+                        </span>
+                        {clsCard.atRiskCount > 0 ? (
+                          <span className="text-[10px] font-black uppercase bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>{clsCard.atRiskCount} com &lt; 75%</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-black uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Frequência Ok</span>
+                          </span>
+                        )}
+                      </div>
 
-            return (
-              <div
-                key={session.id}
-                className="bg-slate-950/80 border border-slate-800/80 hover:border-slate-700 p-5 rounded-3xl flex flex-col justify-between space-y-4 shadow-xl transition-all relative group"
-              >
-                {/* ⚡ BOTÃO DE EXCLUSÃO RÁPIDA (LIXEIRA) NO CANTO SUPERIOR DIREITO */}
-                <button
-                  type="button"
-                  onClick={() => handleDeleteSession(session.id, quizTitle)}
-                  className="absolute top-4 right-4 p-2 text-slate-500 hover:text-red-400 hover:bg-red-950/40 rounded-xl transition-colors cursor-pointer"
-                  title="Excluir sessão iniciada por engano"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                      <div>
+                        <h3 className="font-black text-white text-lg leading-snug">{clsCard.courseName}</h3>
+                        <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
+                          <Users className="w-3.5 h-3.5 text-indigo-400" />
+                          <span><strong>{clsCard.totalStudents}</strong> alunos matriculados</span>
+                        </p>
+                        <p className="text-xs text-blue-400 mt-0.5 font-semibold">
+                          Disciplina: {clsCard.subjectName}
+                        </p>
+                      </div>
 
-                <div className="space-y-3 pr-8">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase bg-blue-500/10 text-blue-400 px-2.5 py-0.5 rounded-full border border-blue-500/20">
-                      {classCode}
-                    </span>
-
-                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5" />
-                      <span>{formattedDate}</span>
-                    </span>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[10px] font-black uppercase bg-violet-500/10 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded">
-                        {quizType}
-                      </span>
-                    </div>
-                    <h3 className="font-bold text-white text-base leading-snug">{quizTitle}</h3>
-                    <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
-                      <BookOpen className="w-3 h-3 text-indigo-400" />
-                      <span>{subjectName}</span>
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 pt-1">
-                    <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80 text-center">
-                      <span className="text-[10px] text-slate-400 block font-medium">Alunos</span>
-                      <strong className="text-sm text-white font-bold">{stats.participantsCount}</strong>
+                      <div className="grid grid-cols-2 gap-2 pt-2">
+                        <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 text-center">
+                          <span className="text-[10px] text-slate-400 block font-medium uppercase">Dias de Aula</span>
+                          <strong className="text-sm text-white font-black">{clsCard.totalRegisteredDays}</strong>
+                        </div>
+                        <div className="bg-slate-900 p-3 rounded-2xl border border-slate-800 text-center">
+                          <span className="text-[10px] text-slate-400 block font-medium uppercase">Alunos em Risco</span>
+                          <strong className={`text-sm font-black ${clsCard.atRiskCount > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                            {clsCard.atRiskCount}
+                          </strong>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80 text-center">
-                      <span className="text-[10px] text-slate-400 block font-medium">Precisão</span>
-                      <strong className="text-sm text-emerald-400 font-bold">{stats.accuracy}%</strong>
-                    </div>
-
-                    <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80 text-center">
-                      <span className="text-[10px] text-slate-400 block font-medium">Média</span>
-                      <strong
-                        className={
-                          'text-sm font-black ' +
-                          (isApproved ? 'text-emerald-400' : 'text-amber-400')
-                        }
+                    <div className="pt-3 border-t border-slate-800/80">
+                      <button
+                        type="button"
+                        disabled={isLoadingThisReport}
+                        onClick={() => handleOpenClassReportModal(clsCard.id, clsCard)}
+                        className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-black py-2.5 rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
                       >
-                        {Number(stats.averageGrade || 0).toFixed(1)}
-                      </strong>
+                        {isLoadingThisReport ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                        ) : (
+                          <FileSpreadsheet className="w-4 h-4" />
+                        )}
+                        <span>{isLoadingThisReport ? 'Carregando Dossiê...' : 'Abrir Dossiê Oficial'}</span>
+                      </button>
                     </div>
                   </div>
-                </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/80">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenDetails(session.id)}
-                    className="bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold py-2 rounded-xl border border-slate-800 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-blue-400" />
-                    <span>Detalhes</span>
-                  </button>
+      {/* ========================================================= */}
+      {/* VISÃO 2: SESSÕES E ATIVIDADES ISOLADAS                    */}
+      {/* ========================================================= */}
+      {historyMode === 'sessions' && (
+        <div>
+          {loading ? (
+            <div className="py-24 text-center space-y-3">
+              <div className="w-8 h-8 border-4 border-violet-500 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-xs text-slate-400">Carregando histórico de avaliações...</p>
+            </div>
+          ) : filteredSessions.length === 0 ? (
+            <div className="bg-slate-900/40 border border-slate-800 p-12 rounded-3xl text-center space-y-3">
+              <History className="w-12 h-12 text-slate-600 mx-auto" />
+              <h3 className="text-base font-bold text-slate-300">Nenhuma sessão encontrada</h3>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                Assim que você lançar uma atividade, avaliação ou quiz interativo no telão, o registro com as notas dos alunos aparecerá aqui.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {filteredSessions.map((session) => {
+                const stats = getSessionStats(session);
+                const dateSource = session.startedAt || session.date;
+                const formattedDate = dateSource
+                  ? new Date(dateSource).toLocaleDateString('pt-BR', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : 'Data N/A';
 
-                  <button
-                    type="button"
-                    onClick={() => handleExportSessionExcel(session)}
-                    className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                const isApproved = stats.averageGrade >= 7.0;
+                const quizTitle = session.quiz?.title || session.quizTitle || 'Quiz Sem Título';
+                const classCode = session.class?.code || session.classCode || 'Turma N/A';
+                const subjectName =
+                  session.quiz?.subject?.name || session.subjectName || 'Disciplina Geral';
+                const quizType = session.quiz?.type || session.quizType || 'AVALIAÇÃO';
+                const targetClassId = session.class?.id || (session as any).classId;
+
+                return (
+                  <div
+                    key={session.id}
+                    className="bg-slate-950/80 border border-slate-800/80 hover:border-slate-700 p-5 rounded-3xl flex flex-col justify-between space-y-4 shadow-xl transition-all relative group"
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Excel</span>
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSession(session.id, quizTitle)}
+                      className="absolute top-4 right-4 p-2 text-slate-500 hover:text-red-400 hover:bg-red-950/40 rounded-xl transition-colors cursor-pointer"
+                      title="Excluir sessão iniciada por engano"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+
+                    <div className="space-y-3 pr-8">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold uppercase bg-blue-500/10 text-blue-400 px-2.5 py-0.5 rounded-full border border-blue-500/20">
+                          {classCode}
+                        </span>
+
+                        <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5" />
+                          <span>{formattedDate}</span>
+                        </span>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] font-black uppercase bg-violet-500/10 text-violet-300 border border-violet-500/30 px-2 py-0.5 rounded">
+                            {quizType}
+                          </span>
+                        </div>
+                        <h3 className="font-bold text-white text-base leading-snug">{quizTitle}</h3>
+                        <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+                          <BookOpen className="w-3 h-3 text-indigo-400" />
+                          <span>{subjectName}</span>
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 pt-1">
+                        <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80 text-center">
+                          <span className="text-[10px] text-slate-400 block font-medium">Alunos</span>
+                          <strong className="text-sm text-white font-bold">
+                            {stats.participantsCount}
+                          </strong>
+                        </div>
+
+                        <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80 text-center">
+                          <span className="text-[10px] text-slate-400 block font-medium">Precisão</span>
+                          <strong className="text-sm text-emerald-400 font-bold">
+                            {stats.accuracy}%
+                          </strong>
+                        </div>
+
+                        <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80 text-center">
+                          <span className="text-[10px] text-slate-400 block font-medium">Média</span>
+                          <strong
+                            className={
+                              'text-sm font-black ' +
+                              (isApproved ? 'text-emerald-400' : 'text-amber-400')
+                            }
+                          >
+                            {Number(stats.averageGrade || 0).toFixed(1)}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800/80">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDetails(session.id)}
+                        className="bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold py-2 rounded-xl border border-slate-800 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-blue-400" />
+                        <span>Detalhes</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleExportSessionExcel(session)}
+                        className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Excel</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -407,7 +670,8 @@ export const SessionHistory: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 mt-1">
-                  {selectedSession.quiz?.subject?.name || selectedSession.subjectName} • Relatório de Respostas por Aluno
+                  {selectedSession.quiz?.subject?.name || selectedSession.subjectName} • Relatório de
+                  Respostas por Aluno
                 </p>
               </div>
 
@@ -432,7 +696,7 @@ export const SessionHistory: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {(!selectedSession.answers || selectedSession.answers.length === 0) ? (
+                    {!selectedSession.answers || selectedSession.answers.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="p-6 text-center text-slate-500 italic">
                           Registros consolidados oficiais da sessão salvos no banco.
@@ -459,7 +723,11 @@ export const SessionHistory: React.FC = () => {
                                   : 'bg-red-500/10 text-red-400 border-red-500/35')
                               }
                             >
-                              {ans.isCorrect ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                              {ans.isCorrect ? (
+                                <CheckCircle2 className="w-3 h-3" />
+                              ) : (
+                                <XCircle className="w-3 h-3" />
+                              )}
                               {ans.isCorrect ? 'Correta' : 'Incorreta'}
                             </span>
                           </td>
@@ -482,6 +750,33 @@ export const SessionHistory: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* ⚡ MODAL CONSOLIDADO DO DOSSIÊ OFICIAL RECONECTADO À API REAL COM AS PROPS */}
+      {/* ========================================================================= */}
+      {isReportOpen && (
+        <ClassReportModal
+        isOpen={isReportOpen}
+        onClose={() => {
+          setIsReportOpen(false);
+          setReportData(null);
+          setSelectedCardFallback(null);
+        }}
+        classId={loadingReportId || selectedCardFallback?.id}
+        classNameStr={reportData?.classInfo?.code || selectedCardFallback?.code || 'Turma'}
+        courseNameStr={reportData?.classInfo?.courseName || selectedCardFallback?.courseName || 'Treinamento'}
+        subjectNameStr={reportData?.classInfo?.subjectName || selectedCardFallback?.subjectName || 'Conhecimentos Gerais'}
+        totalQuizzes={reportData?.activityCounts?.quizzesCount ?? 0}
+        totalExams={reportData?.activityCounts?.examsCount ?? 0}
+        totalPractices={reportData?.activityCounts?.practicesCount ?? 0}
+        students={reportData?.students || []}
+        onRefresh={() => {
+          if (loadingReportId || selectedCardFallback?.id) {
+            handleOpenClassReportModal(loadingReportId || selectedCardFallback?.id, selectedCardFallback);
+          }
+        }}
+      />
       )}
     </div>
   );

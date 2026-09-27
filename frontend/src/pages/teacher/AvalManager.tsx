@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../services/api';
 import { AiImportModal } from './AiImportModal';
+import { ExamPrintModal } from './ExamPrintModal';
+import { PersonalQuestionBankModal } from './PersonalQuestionBankModal';
 import {
+  BookmarkCheck,
+  BookmarkPlus,
   FileCheck2,
   PlusCircle,
   Trash2,
@@ -22,6 +26,7 @@ import {
   Clock,
   Globe,
   Tag,
+  Printer,
 } from 'lucide-react';
 
 type QuestionType = 'MULTIPLE_CHOICE' | 'TRUE_FALSE' | 'FAST_ANSWER' | 'SLIDER' | 'PUZZLE';
@@ -53,6 +58,12 @@ export const AvalManager: React.FC = () => {
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [editingEvalId, setEditingEvalId] = useState<string | null>(null);
 
+  const [isQuestionBankOpen, setIsQuestionBankOpen] = useState(false);
+
+  // ⚡ Estados para Impressão de Provas Formais em PDF
+  const [printExamData, setPrintExamData] = useState<any | null>(null);
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+
   // ⚡ Estados para o Modal de Publicação no Repositório Global
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [quizToPublish, setQuizToPublish] = useState<any>(null);
@@ -64,6 +75,24 @@ export const AvalManager: React.FC = () => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [durationMinutes, setDurationMinutes] = useState<number>(45);
+
+  // ⚡ Normalizador Dinâmico de Imagens para suportar variações de IP e portas
+  const formatImageUrl = (url?: string | null): string => {
+    if (!url) return '';
+    let target = url.trim();
+
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      try {
+        const parsed = new URL(target);
+        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
+      } catch (e) {
+        return encodeURI(target);
+      }
+    }
+
+    const slash = target.startsWith('/') ? '' : '/';
+    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
+  };
 
   const createInitialQuestion = (id: string): QuestionDraft => ({
     id,
@@ -95,13 +124,16 @@ export const AvalManager: React.FC = () => {
       ]);
       setSubjects(subRes.data || []);
       const allQuizzes = quizRes.data || [];
-      
+
       // Filtra apenas as avaliações formais aceitando variações de acentuação do Enum
       setEvaluations(
-        allQuizzes.filter((q: any) => 
-          q.type === 'AVALIAÇAO' || 
-          q.type === 'AVALIACAO' || 
-          String(q.type).normalize('NFD').replace(/[\u0300-\u036f]/g, '') === 'AVALIACAO'
+        allQuizzes.filter(
+          (q: any) =>
+            q.type === 'AVALIAÇAO' ||
+            q.type === 'AVALIACAO' ||
+            String(q.type)
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '') === 'AVALIACAO'
         )
       );
 
@@ -133,6 +165,48 @@ export const AvalManager: React.FC = () => {
     const updated = [...questions];
     (updated[index] as any)[field] = value;
     setQuestions(updated);
+  };
+
+  const handleImportFromPersonalBank = (savedQ: any) => {
+    const newQuestion = {
+      id: Date.now().toString(),
+      title: savedQ.title,
+      imageUrl: savedQ.imageUrl || '',
+      type: savedQ.type,
+      weight: Number(savedQ.weight) || 2.5,
+      justification: savedQ.justification || '',
+      options: savedQ.options || [],
+      tfCorrectIndex: 1,
+      shortAnswerKeywords: ['', '', ''],
+      sliderConfig: savedQ.sliderConfig || { min: 0, max: 100, target: 50, tolerance: 0, unit: 'bar' },
+    };
+    setQuestions((prev) => [...prev, newQuestion]);
+  };
+
+  const handleSaveToPersonalBank = async (q: QuestionDraft) => {
+    const tagInput = window.prompt(
+      'Digite tags para catalogar esta questão no seu acervo (separadas por vírgula):',
+      'Segurança, NR-12'
+    );
+    if (tagInput === null) return;
+
+    try {
+      const tags = tagInput.split(',').map((t) => t.trim().toLowerCase());
+      await api.post('/academic/personal-questions', {
+        title: q.title,
+        type: q.type,
+        weight: q.weight,
+        justification: q.justification,
+        imageUrl: q.imageUrl,
+        options: q.options,
+        sliderConfig: q.sliderConfig,
+        tags,
+        isFavorite: true,
+      });
+      alert('Questão adicionada ao seu Banco Pessoal com sucesso!');
+    } catch (err) {
+      alert('Erro ao salvar no banco pessoal.');
+    }
   };
 
   const handleUpdateOptionText = (qIndex: number, optIndex: number, text: string) => {
@@ -175,8 +249,10 @@ export const AvalManager: React.FC = () => {
         },
       });
 
-      if (res.data && res.data.url) {
-        handleUpdateQuestion(qIndex, 'imageUrl', res.data.url);
+      if (res.data) {
+        // ⚡ Normaliza para salvar caminho relativo confiável (/uploads/filename.ext)
+        const savedUrl = res.data.url || res.data.fileUrl || `/uploads/${res.data.filename}`;
+        handleUpdateQuestion(qIndex, 'imageUrl', savedUrl);
       }
     } catch (err: any) {
       console.error('Erro ao enviar imagem para o servidor:', err);
@@ -184,7 +260,26 @@ export const AvalManager: React.FC = () => {
     }
   };
 
-  // ⚡ Funções de Publicação no Repositório Global
+  // ⚡ Carrega detalhes e abre a impressão da prova em folha A4
+  const handleOpenPrintPreview = async (ev: any) => {
+    try {
+      const res = await api.get(`/quizzes/${ev.id}`);
+      const fullExam = res.data || ev;
+      
+      if (!fullExam.subjectName && fullExam.subject?.name) {
+        fullExam.subjectName = fullExam.subject.name;
+      }
+      
+      setPrintExamData(fullExam);
+      setIsPrintModalOpen(true);
+    } catch (err) {
+      console.warn('Não foi possível carregar os detalhes pela API, usando dados locais:', err);
+      setPrintExamData(ev);
+      setIsPrintModalOpen(true);
+    }
+  };
+
+  // ⚡ Publicação no Repositório Global
   const handleOpenPublishModal = (ev: any) => {
     setQuizToPublish(ev);
     setKnowledgeArea(ev.knowledgeArea || 'Segurança do Trabalho');
@@ -210,7 +305,11 @@ export const AvalManager: React.FC = () => {
         tags: tagsArray,
       });
 
-      alert(newPublicState ? 'Avaliação publicada no Repositório Global com sucesso!' : 'Avaliação retirada do Repositório Global.');
+      alert(
+        newPublicState
+          ? 'Avaliação publicada no Repositório Global com sucesso!'
+          : 'Avaliação retirada do Repositório Global.'
+      );
       setIsPublishModalOpen(false);
       fetchData();
     } catch (err) {
@@ -304,7 +403,10 @@ export const AvalManager: React.FC = () => {
         let sliderParsed = { min: 0, max: 100, target: 50, tolerance: 0, unit: 'bar' };
         if (q.sliderConfig) {
           try {
-            sliderParsed = typeof q.sliderConfig === 'string' ? JSON.parse(q.sliderConfig) : q.sliderConfig;
+            sliderParsed =
+              typeof q.sliderConfig === 'string'
+                ? JSON.parse(q.sliderConfig)
+                : q.sliderConfig;
           } catch (e) {}
         }
 
@@ -329,7 +431,10 @@ export const AvalManager: React.FC = () => {
         ];
 
         if (q.options && q.options.length > 0) {
-          q.options.forEach((opt: any, idx: number) => {
+          const sortedOptions = [...q.options].sort(
+            (a: any, b: any) => (a.correctOrder ?? 0) - (b.correctOrder ?? 0)
+          );
+          sortedOptions.forEach((opt: any, idx: number) => {
             if (idx < 4) {
               defaultOpts[idx] = {
                 text: opt.text,
@@ -413,8 +518,18 @@ export const AvalManager: React.FC = () => {
             }));
           } else if (q.type === 'TRUE_FALSE') {
             formattedOptions = [
-              { text: 'Verdadeiro', color: 'blue', isCorrect: q.tfCorrectIndex === 1, correctOrder: 0 },
-              { text: 'Falso', color: 'red', isCorrect: q.tfCorrectIndex === 0, correctOrder: 1 },
+              {
+                text: 'Verdadeiro',
+                color: 'blue',
+                isCorrect: q.tfCorrectIndex === 1,
+                correctOrder: 0,
+              },
+              {
+                text: 'Falso',
+                color: 'red',
+                isCorrect: q.tfCorrectIndex === 0,
+                correctOrder: 1,
+              },
             ];
           } else if (q.type === 'FAST_ANSWER') {
             formattedOptions = q.shortAnswerKeywords
@@ -503,7 +618,9 @@ export const AvalManager: React.FC = () => {
             <div
               className={
                 'p-3 rounded-2xl ' +
-                (editingEvalId ? 'bg-amber-600/20 text-amber-400' : 'bg-emerald-600/20 text-emerald-400')
+                (editingEvalId
+                  ? 'bg-amber-600/20 text-amber-400'
+                  : 'bg-emerald-600/20 text-emerald-400')
               }
             >
               {editingEvalId ? <Edit3 className="w-6 h-6" /> : <FileCheck2 className="w-6 h-6" />}
@@ -519,6 +636,14 @@ export const AvalManager: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsQuestionBankOpen(true)}
+              className="bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <BookmarkCheck className="w-4 h-4 text-amber-400" />
+              <span>Meu Banco de Questões</span>
+            </button>
             <button
               type="button"
               onClick={() => setIsAiModalOpen(true)}
@@ -558,7 +683,7 @@ export const AvalManager: React.FC = () => {
                 placeholder="Ex: Avaliação Oficial de Noções de Mineração"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full mt-1 bg-slate-950 border border-slate-800 focus:border-emerald-500 p-2.5 rounded-xl text-white text-sm font-semibold focus:outline-none"
+                className="w-full mt-1 bg-slate-950 border border-slate-800 focus:border-emerald-500 p-2.5 rounded-xl text-white text-sm font-semibold focus:outline-none uppercase"
               />
             </div>
 
@@ -610,7 +735,7 @@ export const AvalManager: React.FC = () => {
             <div className="flex items-center gap-3">
               <Award className="w-6 h-6 text-emerald-400 shrink-0" />
               <div>
-                <span className="text-xs font-black text-white block">Distribuição de Pesos das Questões</span>
+                <span className="text-xs font-black text-white block uppercase tracking-wider">Distribuição de Pesos das Questões</span>
                 <span className="text-[11px] text-slate-400">
                   Defina o peso de cada questão para balancear o exame em 10,0 pontos.
                 </span>
@@ -618,7 +743,11 @@ export const AvalManager: React.FC = () => {
             </div>
             <div className="flex items-center gap-2 bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
               <span className="text-xs text-slate-400 font-bold">Total Acumulado:</span>
-              <span className={`text-base font-black ${totalWeight === 10 ? 'text-emerald-400' : 'text-amber-400'}`}>
+              <span
+                className={`text-base font-black ${
+                  totalWeight === 10 ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              >
                 {totalWeight.toFixed(1)} / 10,0 pts
               </span>
             </div>
@@ -643,8 +772,10 @@ export const AvalManager: React.FC = () => {
                       <label className="text-xs font-bold text-slate-400">Tipo:</label>
                       <select
                         value={q.type}
-                        onChange={(e) => handleUpdateQuestion(qIdx, 'type', e.target.value as QuestionType)}
-                        className="bg-slate-900 border border-emerald-500/40 text-emerald-300 text-xs px-2.5 py-1.5 rounded-xl font-bold focus:outline-none"
+                        onChange={(e) =>
+                          handleUpdateQuestion(qIdx, 'type', e.target.value as QuestionType)
+                        }
+                        className="bg-slate-900 border border-emerald-500/40 text-emerald-300 text-xs px-2.5 py-1.5 rounded-xl font-bold focus:outline-none cursor-pointer"
                       >
                         <option value="MULTIPLE_CHOICE">▲ Múltipla Escolha</option>
                         <option value="TRUE_FALSE">✓/✗ Verdadeiro ou Falso</option>
@@ -663,12 +794,22 @@ export const AvalManager: React.FC = () => {
                         min="0"
                         max="10"
                         value={q.weight}
-                        onChange={(e) => handleUpdateQuestion(qIdx, 'weight', Number(e.target.value))}
+                        onChange={(e) =>
+                          handleUpdateQuestion(qIdx, 'weight', Number(e.target.value))
+                        }
                         className="w-12 bg-transparent text-emerald-400 font-black text-xs focus:outline-none"
                       />
                       <span className="text-[10px] text-slate-400">pts</span>
                     </div>
 
+                    <button
+                      type="button"
+                      onClick={() => handleSaveToPersonalBank(q)}
+                      className="text-slate-500 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer"
+                      title="Salvar esta questão no meu Acervo Pessoal"
+                    >
+                      <BookmarkPlus className="w-4 h-4" />
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleRemoveQuestion(qIdx)}
@@ -685,31 +826,46 @@ export const AvalManager: React.FC = () => {
                   placeholder={`Enunciado da Questão ${qIdx + 1}...`}
                   value={q.title}
                   onChange={(e) => handleUpdateQuestion(qIdx, 'title', e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 p-3 rounded-xl text-white text-sm font-semibold focus:outline-none"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 p-3 rounded-xl text-white text-sm font-black focus:outline-none uppercase tracking-wide"
                 />
 
-                {/* IMAGEM */}
+                {/* IMAGEM COM NORMALIZADOR DINÂMICO E PREVENÇÃO DE ÍCONE QUEBRADO */}
                 <div className="p-3 bg-slate-900/60 border border-slate-800 border-dashed rounded-2xl flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <ImageIcon className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs text-slate-300 font-medium">Foto / Esquema ilustrativo (opcional)</span>
+                    <span className="text-xs text-slate-300 font-medium">
+                      Foto / Esquema ilustrativo (opcional)
+                    </span>
                   </div>
 
                   {q.imageUrl ? (
                     <div className="relative">
-                      <img src={q.imageUrl} alt="" className="h-12 w-20 object-cover rounded-lg border border-slate-700" />
+                      <img
+                        src={formatImageUrl(q.imageUrl)}
+                        alt="Preview da Questão"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                        className="h-14 w-24 object-contain rounded-lg border border-slate-700 bg-slate-950 p-1"
+                      />
                       <button
                         type="button"
                         onClick={() => handleUpdateQuestion(qIdx, 'imageUrl', '')}
-                        className="absolute -top-1.5 -right-1.5 bg-red-600 text-white p-0.5 rounded-full"
+                        className="absolute -top-1.5 -right-1.5 bg-red-600 text-white p-0.5 rounded-full cursor-pointer hover:bg-red-500 shadow-md"
+                        title="Remover imagem"
                       >
                         <X className="w-3 h-3" />
                       </button>
                     </div>
                   ) : (
-                    <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700">
+                    <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors">
                       <span>Anexar Imagem</span>
-                      <input type="file" accept="image/*" onChange={(e) => handleImageUpload(qIdx, e)} className="hidden" />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => handleImageUpload(qIdx, e)}
+                        className="hidden"
+                      />
                     </label>
                   )}
                 </div>
@@ -722,7 +878,10 @@ export const AvalManager: React.FC = () => {
                     </span>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {[0, 1, 2, 3].map((optIdx) => (
-                        <div key={optIdx} className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center gap-2">
+                        <div
+                          key={optIdx}
+                          className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center gap-2"
+                        >
                           <span className="w-5 h-5 rounded-md bg-slate-800 flex items-center justify-center font-black text-[10px] text-slate-300 border border-slate-700">
                             {String.fromCharCode(65 + optIdx)}
                           </span>
@@ -730,8 +889,10 @@ export const AvalManager: React.FC = () => {
                             required
                             placeholder={`Alternativa ${String.fromCharCode(65 + optIdx)}`}
                             value={q.options[optIdx]?.text || ''}
-                            onChange={(e) => handleUpdateOptionText(qIdx, optIdx, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none"
+                            onChange={(e) =>
+                              handleUpdateOptionText(qIdx, optIdx, e.target.value)
+                            }
+                            className="w-full bg-transparent text-xs text-white focus:outline-none uppercase font-bold"
                           />
                           <input
                             type="radio"
@@ -756,12 +917,14 @@ export const AvalManager: React.FC = () => {
                       <div
                         onClick={() => handleUpdateQuestion(qIdx, 'tfCorrectIndex', 1)}
                         className={`p-3.5 rounded-2xl border flex items-center justify-between cursor-pointer transition-all bg-blue-950/40 ${
-                          q.tfCorrectIndex === 1 ? 'border-emerald-400 ring-2 ring-emerald-500/40' : 'border-blue-900/60'
+                          q.tfCorrectIndex === 1
+                            ? 'border-emerald-400 ring-2 ring-emerald-500/40'
+                            : 'border-blue-900/60'
                         }`}
                       >
                         <div className="flex items-center gap-2">
                           <Check className="w-5 h-5 text-emerald-400" />
-                          <span className="text-sm font-black text-white">VERDADEIRO</span>
+                          <span className="text-sm font-black text-white tracking-wider">VERDADEIRO</span>
                         </div>
                         <input
                           type="radio"
@@ -775,12 +938,14 @@ export const AvalManager: React.FC = () => {
                       <div
                         onClick={() => handleUpdateQuestion(qIdx, 'tfCorrectIndex', 0)}
                         className={`p-3.5 rounded-2xl border flex items-center justify-between cursor-pointer transition-all bg-red-950/40 ${
-                          q.tfCorrectIndex === 0 ? 'border-red-400 ring-2 ring-red-500/40' : 'border-red-900/60'
+                          q.tfCorrectIndex === 0
+                            ? 'border-red-400 ring-2 ring-red-500/40'
+                            : 'border-red-900/60'
                         }`}
                       >
                         <div className="flex items-center gap-2">
                           <XIcon className="w-5 h-5 text-red-400" />
-                          <span className="text-sm font-black text-white">FALSO</span>
+                          <span className="text-sm font-black text-white tracking-wider">FALSO</span>
                         </div>
                         <input
                           type="radio"
@@ -804,13 +969,15 @@ export const AvalManager: React.FC = () => {
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Resposta Principal *</label>
+                        <label className="text-[10px] font-bold text-slate-400">
+                          Resposta Principal *
+                        </label>
                         <input
                           required
                           placeholder="Termo exato"
                           value={q.shortAnswerKeywords[0] || ''}
                           onChange={(e) => handleUpdateShortKeyword(qIdx, 0, e.target.value)}
-                          className="w-full mt-1 bg-slate-950 border border-emerald-600/50 p-2.5 rounded-xl text-white text-xs font-bold focus:outline-none"
+                          className="w-full mt-1 bg-slate-950 border border-emerald-600/50 p-2.5 rounded-xl text-white text-xs font-bold focus:outline-none uppercase"
                         />
                       </div>
                       <div>
@@ -819,7 +986,7 @@ export const AvalManager: React.FC = () => {
                           placeholder="Variação aceita"
                           value={q.shortAnswerKeywords[1] || ''}
                           onChange={(e) => handleUpdateShortKeyword(qIdx, 1, e.target.value)}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2.5 rounded-xl text-white text-xs font-medium focus:outline-none"
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2.5 rounded-xl text-white text-xs font-medium focus:outline-none uppercase"
                         />
                       </div>
                       <div>
@@ -828,7 +995,7 @@ export const AvalManager: React.FC = () => {
                           placeholder="Variação aceita"
                           value={q.shortAnswerKeywords[2] || ''}
                           onChange={(e) => handleUpdateShortKeyword(qIdx, 2, e.target.value)}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2.5 rounded-xl text-white text-xs font-medium focus:outline-none"
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2.5 rounded-xl text-white text-xs font-medium focus:outline-none uppercase"
                         />
                       </div>
                     </div>
@@ -845,49 +1012,63 @@ export const AvalManager: React.FC = () => {
 
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Mínimo</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Mínimo</label>
                         <input
                           type="number"
                           value={q.sliderConfig.min}
-                          onChange={(e) => handleUpdateSliderConfig(qIdx, 'min', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          onChange={(e) =>
+                            handleUpdateSliderConfig(qIdx, 'min', Number(e.target.value))
+                          }
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Máximo</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Máximo</label>
                         <input
                           type="number"
                           value={q.sliderConfig.max}
-                          onChange={(e) => handleUpdateSliderConfig(qIdx, 'max', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          onChange={(e) =>
+                            handleUpdateSliderConfig(qIdx, 'max', Number(e.target.value))
+                          }
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Unidade</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Unidade</label>
                         <input
                           type="text"
                           placeholder="bar, ton, °C, %"
                           value={q.sliderConfig.unit}
-                          onChange={(e) => handleUpdateSliderConfig(qIdx, 'unit', e.target.value)}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          onChange={(e) =>
+                            handleUpdateSliderConfig(qIdx, 'unit', e.target.value)
+                          }
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs uppercase"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-emerald-400">Gabarito Alvo *</label>
+                        <label className="text-[10px] font-bold text-emerald-400 uppercase">
+                          Gabarito Alvo *
+                        </label>
                         <input
                           type="number"
                           value={q.sliderConfig.target}
-                          onChange={(e) => handleUpdateSliderConfig(qIdx, 'target', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-emerald-500/70 p-2 rounded-xl text-white text-xs font-bold"
+                          onChange={(e) =>
+                            handleUpdateSliderConfig(qIdx, 'target', Number(e.target.value))
+                          }
+                          className="w-full mt-1 bg-slate-950 border border-emerald-500/70 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Tolerância (±)</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">
+                          Tolerância (±)
+                        </label>
                         <input
                           type="number"
                           value={q.sliderConfig.tolerance}
-                          onChange={(e) => handleUpdateSliderConfig(qIdx, 'tolerance', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          onChange={(e) =>
+                            handleUpdateSliderConfig(qIdx, 'tolerance', Number(e.target.value))
+                          }
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                     </div>
@@ -904,7 +1085,10 @@ export const AvalManager: React.FC = () => {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {[0, 1, 2, 3].map((stepIdx) => (
-                        <div key={stepIdx} className="p-2.5 bg-slate-950 border border-slate-700 rounded-xl flex items-center gap-2">
+                        <div
+                          key={stepIdx}
+                          className="p-2.5 bg-slate-950 border border-slate-700 rounded-xl flex items-center gap-2"
+                        >
                           <span className="w-6 h-6 rounded-lg bg-purple-600 text-white font-black text-xs flex items-center justify-center shrink-0">
                             {stepIdx + 1}º
                           </span>
@@ -912,8 +1096,10 @@ export const AvalManager: React.FC = () => {
                             required
                             placeholder={`${stepIdx + 1}ª Etapa...`}
                             value={q.options[stepIdx]?.text || ''}
-                            onChange={(e) => handleUpdateOptionText(qIdx, stepIdx, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none font-medium"
+                            onChange={(e) =>
+                              handleUpdateOptionText(qIdx, stepIdx, e.target.value)
+                            }
+                            className="w-full bg-transparent text-xs text-white focus:outline-none font-bold uppercase"
                           />
                         </div>
                       ))}
@@ -954,7 +1140,7 @@ export const AvalManager: React.FC = () => {
               type="submit"
               disabled={loading}
               className={
-                'flex-1 font-black py-3.5 rounded-2xl text-white shadow-lg transition-all cursor-pointer disabled:opacity-50 text-xs ' +
+                'flex-1 font-black py-3.5 rounded-2xl text-white shadow-lg transition-all cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider ' +
                 (editingEvalId
                   ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/30'
                   : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/20')
@@ -996,7 +1182,6 @@ export const AvalManager: React.FC = () => {
                   </span>
 
                   <div className="flex items-center gap-1">
-                    {/* ⚡ BOTÃO DE PUBLICAR NO REPOSITÓRIO GLOBAL */}
                     <button
                       type="button"
                       onClick={() => handleOpenPublishModal(ev)}
@@ -1006,6 +1191,18 @@ export const AvalManager: React.FC = () => {
                       title={ev.isPublic ? 'Remover do Repositório Global' : 'Publicar no Repositório Global'}
                     >
                       <Globe className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenPrintPreview(ev);
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-blue-400 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                      title="Imprimir Avaliação / Salvar em PDF"
+                    >
+                      <Printer className="w-4 h-4" />
                     </button>
 
                     <button
@@ -1028,12 +1225,12 @@ export const AvalManager: React.FC = () => {
                 </div>
 
                 <div>
-                  <h3 className="font-bold text-white text-sm">{ev.title}</h3>
+                  <h3 className="font-bold text-white text-sm uppercase">{ev.title}</h3>
                   <p className="text-xs text-slate-400 mt-1">
                     {ev.subject?.name || 'Geral'} • <strong className="text-emerald-400">{ev.questions?.length || 0} questões</strong>
                   </p>
                   {ev.isPublic && (
-                    <span className="inline-flex items-center gap-1 text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md mt-2">
+                    <span className="inline-flex items-center gap-1 text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md mt-2 uppercase font-bold">
                       <Globe className="w-3 h-3" /> Público ({ev.knowledgeArea || 'Geral'})
                     </span>
                   )}
@@ -1044,7 +1241,7 @@ export const AvalManager: React.FC = () => {
         </div>
       </div>
 
-      {/* ⚡ MODAL DE CONFIGURAÇÃO DE PUBLICAÇÃO GLOBAL */}
+      {/* ⚡ MODAL DE PUBLICAÇÃO GLOBAL */}
       {isPublishModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full space-y-5 shadow-2xl relative">
@@ -1106,10 +1303,25 @@ export const AvalManager: React.FC = () => {
         </div>
       )}
 
+      {/* MODAL DE IMPORTAÇÃO IA */}
       <AiImportModal
         isOpen={isAiModalOpen}
         onClose={() => setIsAiModalOpen(false)}
         onImportData={handleImportFromAi}
+      />
+
+      {/* MODAL DE IMPRESSÃO DA AVALIAÇÃO FORMAL EM PDF */}
+      <ExamPrintModal
+        isOpen={isPrintModalOpen}
+        onClose={() => setIsPrintModalOpen(false)}
+        exam={printExamData}
+      />
+
+      {/* MODAL DO BANCO PESSOAL DE QUESTÕES */}
+      <PersonalQuestionBankModal
+        isOpen={isQuestionBankOpen}
+        onClose={() => setIsQuestionBankOpen(false)}
+        onSelectQuestion={handleImportFromPersonalBank}
       />
     </div>
   );

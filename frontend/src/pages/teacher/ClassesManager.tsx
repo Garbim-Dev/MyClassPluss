@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../services/api';
 import { ClassStudentsModal } from './ClassStudentsModal';
 import { ClassAttendanceModal } from './ClassAttendanceModal';
+import { ClassReportModal } from './ClassReportModal';
 import { 
   GraduationCap, 
   Plus, 
@@ -17,7 +18,8 @@ import {
   Calendar,
   DoorClosed,
   Users,
-  UserCheck
+  UserCheck,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 export const ClassesManager: React.FC = () => {
@@ -43,6 +45,12 @@ export const ClassesManager: React.FC = () => {
   
   // ⚡ Estado para controlar o Modal de Chamada Diária
   const [attendanceClass, setAttendanceClass] = useState<any | null>(null);
+
+  // ⚡ Estados para o Modal do Dossiê Oficial Consolidado
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [selectedClassForReport, setSelectedClassForReport] = useState<any | null>(null);
+  const [reportData, setReportData] = useState<any | null>(null);
+  const [loadingReportId, setLoadingReportId] = useState<string | null>(null);
   
   // Campos do formulário de Turma / Módulo
   const [classCode, setClassCode] = useState('');
@@ -141,6 +149,54 @@ export const ClassesManager: React.FC = () => {
   const handleOpenStudentsModal = (cls: any) => {
     setSelectedClassForStudents(cls);
     setIsStudentsModalOpen(true);
+  };
+
+  // ⚡ Abre o Dossiê Oficial buscando as notas reais e atividades calculadas no backend
+  const handleOpenReportModal = async (cls: any) => {
+    setLoadingReportId(cls.id);
+    setSelectedClassForReport(cls);
+
+    try {
+      const subjectIdToUse = cls.modules?.[0]?.subjectId;
+      const res = await api.get(`/academic/classes/${cls.id}/performance`, {
+        params: subjectIdToUse ? { subjectId: subjectIdToUse } : undefined,
+      });
+
+      setReportData(res.data);
+      setIsReportModalOpen(true);
+    } catch (err: any) {
+      console.error('Erro ao carregar dossiê da turma:', err);
+      setReportData({
+        classInfo: {
+          code: cls.code,
+          courseName: cls.course?.name || courses.find(c => c.id === cls.courseId)?.name || 'Treinamento Técnico',
+          subjectName: cls.modules?.[0]?.subject?.name || 'Conhecimentos Gerais',
+        },
+        activityCounts: {
+          totalActivities: 0,
+          quizzesCount: 0,
+          examsCount: 0,
+          practicesCount: 0,
+        },
+        summary: {
+          enrolledCount: cls.enrollments?.length || 0,
+          classAverage: 0.0,
+          approvedCount: 0,
+          failedCount: cls.enrollments?.length || 0,
+        },
+        students: (cls.enrollments || []).map((e: any, idx: number) => ({
+          rank: idx + 1,
+          userId: e.user?.id || e.id,
+          userName: e.user?.name || e.user?.email || `Aluno #${idx + 1}`,
+          totalGrade: 0.0,
+          isApproved: false,
+          attendancePercentage: 100,
+        })),
+      });
+      setIsReportModalOpen(true);
+    } finally {
+      setLoadingReportId(null);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -273,6 +329,7 @@ export const ClassesManager: React.FC = () => {
             const course = courses.find(c => c.id === cls.courseId);
             const module = cls.modules?.[0];
             const subject = module?.subject;
+            const isReportLoading = loadingReportId === cls.id;
             
             return (
               <div 
@@ -345,24 +402,38 @@ export const ClassesManager: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* ⚡ BOTÕES DE GERENCIAMENTO DE ALUNOS E CHAMADA NO CARD */}
-                  <div className="grid grid-cols-2 gap-2 pt-2">
+                  {/* ⚡ BOTÕES DE AÇÕES NO CARD: ALUNOS, CHAMADA E DOSSIÊ OFICIAL */}
+                  <div className="grid grid-cols-3 gap-2 pt-2">
                     <button
                       onClick={() => handleOpenStudentsModal(cls)}
-                      className="bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-[11px] font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1 cursor-pointer"
                       title="Gerenciar alunos matriculados"
                     >
-                      <Users className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>Alunos ({cls.enrollments?.length || 0})</span>
+                      <Users className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      <span className="truncate">Alunos ({cls.enrollments?.length || 0})</span>
                     </button>
 
                     <button
                       onClick={() => setAttendanceClass(cls)}
-                      className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                      className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm"
                       title="Realizar chamada diária"
                     >
-                      <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <UserCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       <span>Chamada</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleOpenReportModal(cls)}
+                      disabled={isReportLoading}
+                      className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-[11px] font-bold py-2 rounded-xl transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm disabled:opacity-50"
+                      title="Abrir Dossiê Oficial e Prontuários da Turma"
+                    >
+                      {isReportLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin shrink-0" />
+                      ) : (
+                        <FileSpreadsheet className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                      )}
+                      <span>Dossiê</span>
                     </button>
                   </div>
                 </div>
@@ -372,7 +443,7 @@ export const ClassesManager: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL DE CADASTRO / EDIÇÃO */}
+      {/* MODAL DE CADASTRO / EDIÇÃO DE TURMA */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in overflow-y-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl relative my-8">
@@ -576,7 +647,7 @@ export const ClassesManager: React.FC = () => {
         classCode={selectedClassForStudents?.code || ''}
       />
 
-      {/* ⚡ MODAL DE CHAMADA (DIÁRIO DE FREQUÊNCIA) */}
+      {/* MODAL DE CHAMADA (DIÁRIO DE FREQUÊNCIA) */}
       {attendanceClass && (
         <ClassAttendanceModal
           isOpen={Boolean(attendanceClass)}
@@ -584,6 +655,26 @@ export const ClassesManager: React.FC = () => {
           classId={attendanceClass.id}
           classCode={attendanceClass.code}
           courseName={courses.find(c => c.id === attendanceClass.courseId)?.name || 'Turma Técnica'}
+        />
+      )}
+
+      {/* ========================================================================= */}
+      {/* ⚡ MODAL DO DOSSIÊ OFICIAL E PRONTUÁRIOS (INTEGRADO DIRETAMENTE À TURMA)  */}
+      {/* ========================================================================= */}
+      {selectedClassForReport && (
+        <ClassReportModal
+          isOpen={isReportModalOpen}
+          onClose={() => {
+            setIsReportModalOpen(false);
+            setSelectedClassForReport(null);
+          }}
+          classNameStr={reportData?.classInfo?.code || selectedClassForReport?.code || 'Turma'}
+          courseNameStr={reportData?.classInfo?.courseName || courses.find(c => c.id === selectedClassForReport.courseId)?.name || 'Curso'}
+          subjectNameStr={reportData?.classInfo?.subjectName || selectedClassForReport?.modules?.[0]?.subject?.name || 'Conhecimentos Gerais'}
+          totalQuizzes={reportData?.activityCounts?.quizzesCount ?? 0}
+          totalExams={reportData?.activityCounts?.examsCount ?? 0}
+          totalPractices={reportData?.activityCounts?.practicesCount ?? 0}
+          students={reportData?.students || []}
         />
       )}
     </div>

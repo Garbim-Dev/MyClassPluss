@@ -14,6 +14,10 @@ import {
   RotateCcw,
   GraduationCap,
   Radio,
+  ChevronLeft,
+  ChevronRight,
+  HelpCircle,
+  BookmarkCheck,
 } from 'lucide-react';
 
 interface FormalExamViewProps {
@@ -22,9 +26,10 @@ interface FormalExamViewProps {
   classId: string;
   durationMinutes?: number;
   onFinishExam: (result: any) => void;
-  onReturnToLobby?: () => void; // 👈 Callback para retorno limpo ao Lobby sem reload
+  onReturnToLobby?: () => void;
 }
 
+// ⚡ Algoritmo Fisher-Yates para embaralhamento uniforme
 const shuffleArray = (array: any[]) => {
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -49,15 +54,34 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
 }) => {
   const navigate = useNavigate();
 
+  const [currentIdx, setCurrentIdx] = useState<number>(0);
   const [answers, setAnswers] = useState<{ [questionId: string]: any }>({});
   const [timeLeft, setTimeLeft] = useState((durationMinutes || 45) * 60);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedbackResult, setFeedbackResult] = useState<any | null>(null);
 
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [unansweredCount, setUnansweredCount] = useState(0);
+  const [blankQuestionIndexes, setBlankQuestionIndexes] = useState<number[]>([]);
 
   const [puzzleStates, setPuzzleStates] = useState<{ [questionId: string]: any[] }>({});
+  const [orderedQuestions, setOrderedQuestions] = useState<any[]>([]);
+
+  const formatImageUrl = (url?: string | null): string => {
+    if (!url) return '';
+    let target = url.trim();
+
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      try {
+        const parsed = new URL(target);
+        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
+      } catch (e) {
+        return encodeURI(target);
+      }
+    }
+
+    const slash = target.startsWith('/') ? '' : '/';
+    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
+  };
 
   useEffect(() => {
     window.history.pushState(null, '', window.location.href);
@@ -76,21 +100,54 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     };
   }, [feedbackResult, navigate, onReturnToLobby]);
 
+  // ⚡ Inicialização com Embaralhamento Individual e Persistente por Aluno
   useEffect(() => {
-    const cacheKey = `@OffClass:exam_cache_${quizData?.id}`;
-    const saved = sessionStorage.getItem(cacheKey);
+    if (!quizData || !quizData.questions) return;
+
+    const questionsCacheKey = `@MyClassPluss:exam_questions_${quizData.id}_${studentUser?.id}`;
+    const answersCacheKey = `@MyClassPluss:exam_cache_${quizData.id}`;
+
+    const cachedQuestions = sessionStorage.getItem(questionsCacheKey);
+    let finalQuestions: any[] = [];
+
+    if (cachedQuestions) {
+      try {
+        finalQuestions = JSON.parse(cachedQuestions);
+      } catch (e) {
+        finalQuestions = [];
+      }
+    }
+
+    if (finalQuestions.length === 0) {
+      const clonedQuestions = quizData.questions.map((q: any) => {
+        if (q.type === 'MULTIPLE_CHOICE' && q.options && q.options.length > 1) {
+          return {
+            ...q,
+            options: shuffleArray(q.options),
+          };
+        }
+        return q;
+      });
+
+      finalQuestions = shuffleArray(clonedQuestions);
+      sessionStorage.setItem(questionsCacheKey, JSON.stringify(finalQuestions));
+    }
+
+    setOrderedQuestions(finalQuestions);
+
+    const savedAnswers = sessionStorage.getItem(answersCacheKey);
     let initialAnswers: { [qId: string]: any } = {};
 
-    if (saved) {
+    if (savedAnswers) {
       try {
-        initialAnswers = JSON.parse(saved);
+        initialAnswers = JSON.parse(savedAnswers);
         setAnswers(initialAnswers);
       } catch (e) {}
     }
 
     const initialPuzzles: { [qId: string]: any[] } = {};
 
-    quizData.questions?.forEach((q: any) => {
+    finalQuestions.forEach((q: any) => {
       if (q.type === 'PUZZLE' && q.options && q.options.length > 0) {
         const mapped = q.options.map((opt: any, idx: number) => ({
           ...opt,
@@ -100,9 +157,9 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
 
         if (initialAnswers[q.id] && Array.isArray(initialAnswers[q.id])) {
           const cachedIds = initialAnswers[q.id];
-          const restored = cachedIds.map((val: any) =>
-            mapped.find((m: any) => m.id === val || m.correctOrder === val || m.text === val)
-          ).filter(Boolean);
+          const restored = cachedIds
+            .map((val: any) => mapped.find((m: any) => m.id === val || m.correctOrder === val || m.text === val))
+            .filter(Boolean);
           initialPuzzles[q.id] = restored.length === mapped.length ? restored : shuffleArray(mapped);
         } else {
           const shuffled = shuffleArray(mapped);
@@ -114,12 +171,12 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
 
     setPuzzleStates(initialPuzzles);
     setAnswers(initialAnswers);
-  }, [quizData]);
+  }, [quizData, studentUser]);
 
   const handleSelectAnswer = (questionId: string, value: any) => {
     const updated = { ...answers, [questionId]: value };
     setAnswers(updated);
-    sessionStorage.setItem(`@OffClass:exam_cache_${quizData?.id}`, JSON.stringify(updated));
+    sessionStorage.setItem(`@MyClassPluss:exam_cache_${quizData?.id}`, JSON.stringify(updated));
   };
 
   const handleMovePuzzleItem = (questionId: string, index: number, direction: 'up' | 'down') => {
@@ -149,24 +206,29 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     return () => clearInterval(timer);
   }, [timeLeft, feedbackResult]);
 
-  const handlePreSubmit = () => {
-    const questions = quizData.questions || [];
-    let blankCount = 0;
+  const currentQuestionList = orderedQuestions.length > 0 ? orderedQuestions : quizData.questions || [];
 
-    questions.forEach((q: any) => {
-      const val = answers[q.id];
-      if (
-        val === undefined ||
-        val === null ||
-        val === '' ||
-        (q.type === 'FAST_ANSWER' && String(val).trim() === '')
-      ) {
-        blankCount++;
+  const isQuestionAnswered = (q: any): boolean => {
+    if (!q) return false;
+    const val = answers[q.id];
+    if (val === undefined || val === null || val === '') return false;
+    if (q.type === 'FAST_ANSWER' && String(val).trim() === '') return false;
+    return true;
+  };
+
+  const answeredCount = currentQuestionList.filter(isQuestionAnswered).length;
+
+  const handlePreSubmit = () => {
+    const blanks: number[] = [];
+
+    currentQuestionList.forEach((q: any, idx: number) => {
+      if (!isQuestionAnswered(q)) {
+        blanks.push(idx + 1);
       }
     });
 
-    if (blankCount > 0) {
-      setUnansweredCount(blankCount);
+    if (blanks.length > 0) {
+      setBlankQuestionIndexes(blanks);
       setShowConfirmModal(true);
     } else {
       executeSubmission();
@@ -179,7 +241,8 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     setIsSubmitting(true);
 
     try {
-      const formattedAnswers = (quizData.questions || []).map((q: any) => {
+      const questionsToSubmit = currentQuestionList;
+      const formattedAnswers = questionsToSubmit.map((q: any) => {
         let val = answers[q.id];
         if (q.type === 'PUZZLE' && (!val || !Array.isArray(val))) {
           val = (puzzleStates[q.id] || q.options || []).map((item: any) => item.id);
@@ -201,7 +264,10 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
 
       const res = await api.post('/academic/evaluations/submit-exam', payload);
       setFeedbackResult(res.data);
-      sessionStorage.removeItem(`@OffClass:exam_cache_${quizData?.id}`);
+
+      sessionStorage.removeItem(`@MyClassPluss:exam_cache_${quizData?.id}`);
+      sessionStorage.removeItem(`@MyClassPluss:exam_questions_${quizData?.id}_${studentUser?.id}`);
+
       if (onFinishExam) onFinishExam(res.data);
     } catch (err: any) {
       alert('Erro ao enviar avaliação: ' + (err.response?.data?.message || 'Tente novamente.'));
@@ -236,23 +302,23 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
             )}
 
             <div>
-              <h1 className="text-2xl sm:text-3xl font-black text-white">
+              <h1 className="text-2xl sm:text-3xl font-black text-white uppercase tracking-wide">
                 {isApproved ? 'Aprovado na Avaliação!' : 'Resultado Abaixo da Média'}
               </h1>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-slate-400 mt-1 uppercase font-bold tracking-wider">
                 Gabarito formativo e extrato de acertos da sua prova
               </p>
             </div>
 
             <div className="inline-flex items-center gap-6 bg-slate-950/80 px-6 py-3 rounded-2xl border border-slate-800">
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Nota Final</span>
+                <span className="text-[10px] font-black text-slate-400 uppercase block tracking-wider">Nota Final</span>
                 <span className="text-3xl font-black font-mono text-white">
                   {feedbackResult.finalGrade?.toFixed(1)} <span className="text-xs text-slate-500">/ 10</span>
                 </span>
               </div>
               <div className="border-l border-slate-800 pl-6">
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Acertos</span>
+                <span className="text-[10px] font-black text-slate-400 uppercase block tracking-wider">Acertos</span>
                 <span className="text-2xl font-black font-mono text-emerald-400">
                   {feedbackResult.totalCorrect} / {feedbackResult.totalQuestions}
                 </span>
@@ -260,38 +326,36 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
             </div>
           </div>
 
-          {/* BOTÕES DE NAVEGAÇÃO SEGURA */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
               type="button"
               onClick={() => navigate('/student/portal', { replace: true })}
-              className="w-full bg-blue-600 hover:bg-blue-500 py-3.5 rounded-2xl text-xs font-bold text-white shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-95"
+              className="w-full bg-blue-600 hover:bg-blue-500 py-3.5 rounded-2xl text-xs font-black text-white shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-95 uppercase tracking-wider"
             >
               <GraduationCap className="w-4 h-4" />
               <span>Ver Meu Boletim & Histórico</span>
             </button>
 
-            {/* ⚡ Retorno limpo ao Lobby via estado React sem quebrar o socket */}
             <button
               type="button"
               onClick={() => {
-                sessionStorage.removeItem(`@OffClass:exam_cache_${quizData?.id}`);
+                sessionStorage.removeItem(`@MyClassPluss:exam_cache_${quizData?.id}`);
+                sessionStorage.removeItem(`@MyClassPluss:exam_questions_${quizData?.id}_${studentUser?.id}`);
                 if (onReturnToLobby) {
                   onReturnToLobby();
                 } else {
                   navigate(`/join?classId=${classId}`, { replace: true });
                 }
               }}
-              className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 py-3.5 rounded-2xl text-xs font-bold text-slate-300 flex items-center justify-center gap-2 cursor-pointer transition-colors"
+              className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 py-3.5 rounded-2xl text-xs font-black text-slate-300 flex items-center justify-center gap-2 cursor-pointer transition-colors uppercase tracking-wider"
             >
               <Radio className="w-4 h-4 text-emerald-400" />
               <span>Retornar ao Lobby da Sala</span>
             </button>
           </div>
 
-          {/* EXTRATO DETALHADO */}
           <div className="space-y-4 pt-2">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">
               Extrato Detalhado de Respostas
             </h3>
 
@@ -310,31 +374,31 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-black text-slate-400">
+                    <span className="text-xs font-black text-slate-400 uppercase tracking-wider">
                       Questão {idx + 1} • Peso: {item.weight} pts
                     </span>
 
                     {item.isCorrect ? (
-                      <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
+                      <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full border bg-emerald-500/20 text-emerald-300 border-emerald-500/30 uppercase tracking-wide">
                         ✓ Correta (+{item.weight} pts)
                       </span>
                     ) : isBlank ? (
-                      <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full border bg-amber-500/20 text-amber-300 border-amber-500/40">
+                      <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full border bg-amber-500/20 text-amber-300 border-amber-500/40 uppercase tracking-wide">
                         ⚠ Em Branco (0.0 pts)
                       </span>
                     ) : (
-                      <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full border bg-red-500/20 text-red-300 border-red-500/30">
+                      <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full border bg-red-500/20 text-red-300 border-red-500/30 uppercase tracking-wide">
                         ✗ Incorreta (0.0 pts)
                       </span>
                     )}
                   </div>
 
-                  <h4 className="font-bold text-white text-base">{item.title}</h4>
+                  <h4 className="font-black text-white text-base uppercase leading-snug">{item.title}</h4>
 
                   {item.justification && (
                     <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-slate-300">
-                      <strong className="text-emerald-400">Comentário do Instrutor: </strong>
-                      {item.justification}
+                      <strong className="text-emerald-400 uppercase font-black">Comentário do Instrutor: </strong>
+                      <span>{item.justification}</span>
                     </div>
                   )}
                 </div>
@@ -346,195 +410,332 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     );
   }
 
-  // TELA DE PROVA (FORMULÁRIO CONTÍNUO)
+  const q = currentQuestionList[currentIdx];
+  const currentVal = q ? answers[q.id] : null;
+  const isCurrentAnswered = q ? isQuestionAnswered(q) : false;
+
   return (
-    <div className="min-h-screen bg-[#070b19] text-slate-100 font-sans p-4 sm:p-6 select-none">
-      <div className="max-w-4xl mx-auto space-y-6">
-        <header className="sticky top-4 z-40 bg-slate-900/95 border border-slate-800 p-4 rounded-2xl shadow-2xl backdrop-blur-md flex items-center justify-between">
-          <div>
+    <div className="min-h-screen bg-[#070b19] text-slate-100 font-sans p-3 sm:p-6 select-none flex flex-col justify-between">
+      <div className="max-w-4xl mx-auto w-full space-y-4 sm:space-y-6">
+        
+        {/* CABEÇALHO COM CRONÔMETRO E STATUS */}
+        <header className="bg-slate-900/95 border border-slate-800 p-4 rounded-3xl shadow-2xl backdrop-blur-md flex items-center justify-between">
+          <div className="truncate pr-2">
             <div className="flex items-center gap-2">
-              <FileCheck2 className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-base font-black text-white">{quizData.title}</h2>
+              <FileCheck2 className="w-5 h-5 text-emerald-400 shrink-0" />
+              <h2 className="text-sm sm:text-base font-black text-white uppercase tracking-wider truncate">
+                {quizData.title}
+              </h2>
             </div>
-            <span className="text-xs text-slate-400">Aluno: <strong>{studentUser.name}</strong></span>
+            <span className="text-xs text-slate-400 uppercase font-bold tracking-wide block truncate">
+              Aluno: <strong className="text-white">{studentUser.name}</strong>
+            </span>
           </div>
 
-          <div
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl border font-mono font-black ${
-              timeLeft < 300
-                ? 'bg-red-500/20 text-red-400 border-red-500 animate-pulse'
-                : 'bg-slate-950 text-amber-300 border-slate-800'
-            }`}
-          >
-            <Clock className="w-4 h-4 text-amber-400" />
-            <span className="text-lg">{formatTime(timeLeft)}</span>
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <div
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 rounded-2xl border font-mono font-black ${
+                timeLeft < 300
+                  ? 'bg-red-500/20 text-red-400 border-red-500 animate-pulse'
+                  : 'bg-slate-950 text-amber-300 border-slate-800'
+              }`}
+            >
+              <Clock className="w-4 h-4 text-amber-400" />
+              <span className="text-sm sm:text-lg">{formatTime(timeLeft)}</span>
+            </div>
           </div>
         </header>
 
-        <div className="space-y-6">
-          {quizData.questions?.map((q: any, idx: number) => {
-            const currentVal = answers[q.id];
+        {/* ⚡ RÉGUA DE NAVEGAÇÃO LIVRE DAS QUESTÕES (ESTILO GABARITO EM PAPEL) */}
+        <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-3xl shadow-xl space-y-2">
+          <div className="flex items-center justify-between text-[11px] font-bold text-slate-400 px-1">
+            <span className="flex items-center gap-1.5 uppercase tracking-wider">
+              <BookmarkCheck className="w-3.5 h-3.5 text-blue-400" />
+              <span>Mapa de Questões ({answeredCount}/{currentQuestionList.length} respondidas)</span>
+            </span>
+            <span className="text-slate-500">Toque no número para saltar</span>
+          </div>
 
-            return (
-              <div key={q.id || idx} className="bg-slate-900/80 border border-slate-800 p-6 rounded-3xl space-y-4 shadow-xl">
-                <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-                  <span className="text-xs font-black text-emerald-400 uppercase tracking-wide">
-                    Questão {idx + 1} de {quizData.questions.length}
-                  </span>
-                  <span className="text-xs font-bold text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-full border border-slate-800">
-                    Peso: {q.weight || 1.0} pts
-                  </span>
-                </div>
+          <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto pb-1.5 pt-0.5 scrollbar-thin">
+            {currentQuestionList.map((item: any, i: number) => {
+              const answered = isQuestionAnswered(item);
+              const isCurrent = i === currentIdx;
 
-                <h3 className="text-lg font-bold text-white leading-relaxed">{q.title}</h3>
+              let btnStyle = 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700';
 
-                {q.imageUrl && (
-                  <div className="max-h-60 flex items-center justify-center p-2 bg-slate-950/60 rounded-2xl border border-slate-800">
-                    <img src={q.imageUrl} alt="" className="max-h-56 object-contain rounded-xl" />
-                  </div>
-                )}
+              if (isCurrent) {
+                btnStyle = 'bg-blue-600 text-white border-blue-400 ring-2 ring-blue-500/50 shadow-lg shadow-blue-600/40 scale-105';
+              } else if (answered) {
+                btnStyle = 'bg-emerald-950/60 text-emerald-300 border-emerald-500/50 font-black';
+              } else {
+                btnStyle = 'bg-slate-950/90 text-amber-400/80 border-amber-500/30 font-medium';
+              }
 
-                {(q.type === 'MULTIPLE_CHOICE' || q.type === 'TRUE_FALSE') && (
-                  <div className="grid grid-cols-1 gap-2.5">
-                    {q.options?.map((opt: any, optIdx: number) => {
-                      const isSelected =
-                        currentVal === opt.id ||
-                        currentVal === optIdx ||
-                        (typeof currentVal === 'string' && currentVal.toLowerCase() === opt.text?.toLowerCase());
-
-                      return (
-                        <div
-                          key={opt.id || optIdx}
-                          onClick={() => handleSelectAnswer(q.id, opt.id || opt.text)}
-                          className={`p-3.5 rounded-2xl border flex items-center gap-3 cursor-pointer transition-all ${
-                            isSelected
-                              ? 'bg-emerald-600/30 border-emerald-500 text-white ring-1 ring-emerald-500'
-                              : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <span
-                            className={`w-6 h-6 rounded-lg font-bold text-xs flex items-center justify-center border ${
-                              isSelected ? 'bg-emerald-600 text-white border-emerald-400' : 'bg-slate-900 border-slate-700 text-slate-400'
-                            }`}
-                          >
-                            {q.type === 'TRUE_FALSE'
-                              ? opt.text?.toLowerCase() === 'verdadeiro' ? '✓' : '✗'
-                              : String.fromCharCode(65 + optIdx)}
-                          </span>
-                          <span className="text-sm font-bold">{opt.text}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {q.type === 'PUZZLE' && (
-                  <div className="space-y-3 bg-slate-950/80 p-4 rounded-2xl border border-slate-800">
-                    <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5 mb-2">
-                      <Layers className="w-4 h-4" />
-                      <span>Use as setas para organizar na ordem correta (1º ao 4º):</span>
-                    </span>
-
-                    <div className="space-y-2">
-                      {(puzzleStates[q.id] || q.options || []).map((pItem: any, pIdx: number) => (
-                        <div
-                          key={pItem.id || pIdx}
-                          className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between shadow-sm"
-                        >
-                          <div className="flex items-center gap-3 pr-2">
-                            <span className="w-7 h-7 rounded-lg bg-purple-600/30 text-purple-300 border border-purple-500/40 flex items-center justify-center font-black text-xs shrink-0">
-                              {pIdx + 1}º
-                            </span>
-                            <span className="text-xs sm:text-sm font-medium text-white">{pItem.text}</span>
-                          </div>
-
-                          <div className="flex flex-col gap-1 shrink-0">
-                            <button
-                              type="button"
-                              disabled={pIdx === 0}
-                              onClick={() => handleMovePuzzleItem(q.id, pIdx, 'up')}
-                              className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-20 rounded-lg text-slate-200 cursor-pointer transition-colors"
-                            >
-                              <ArrowUp className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={pIdx === (puzzleStates[q.id]?.length || q.options?.length || 4) - 1}
-                              onClick={() => handleMovePuzzleItem(q.id, pIdx, 'down')}
-                              className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-20 rounded-lg text-slate-200 cursor-pointer transition-colors"
-                            >
-                              <ArrowDown className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {q.type === 'FAST_ANSWER' && (
-                  <input
-                    type="text"
-                    placeholder="Digite sua resposta..."
-                    value={currentVal || ''}
-                    onChange={(e) => handleSelectAnswer(q.id, e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 p-3.5 rounded-xl text-white text-sm focus:outline-none"
-                  />
-                )}
-
-                {q.type === 'SLIDER' && (() => {
-                  const conf = typeof q.sliderConfig === 'string' ? JSON.parse(q.sliderConfig || '{}') : q.sliderConfig || {};
-                  const min = conf.min ?? 0;
-                  const max = conf.max ?? 100;
-                  const val = currentVal !== undefined ? currentVal : min;
-
-                  return (
-                    <div className="space-y-3 bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                      <div className="flex justify-between text-xs font-mono text-slate-400">
-                        <span>Min: {min}</span>
-                        <span className="text-base font-bold text-amber-300">{val} {conf.unit || ''}</span>
-                        <span>Max: {max}</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={min}
-                        max={max}
-                        value={val}
-                        onChange={(e) => handleSelectAnswer(q.id, Number(e.target.value))}
-                        className="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                      />
-                    </div>
-                  );
-                })()}
-              </div>
-            );
-          })}
+              return (
+                <button
+                  key={item.id || i}
+                  type="button"
+                  onClick={() => setCurrentIdx(i)}
+                  className={`w-9 h-9 sm:w-10 sm:h-10 rounded-2xl border text-xs sm:text-sm font-mono flex items-center justify-center shrink-0 transition-all cursor-pointer ${btnStyle}`}
+                  title={`Saltar para Questão ${i + 1} ${answered ? '(Respondida)' : '(Em branco)'}`}
+                >
+                  {i + 1}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        <div className="pt-4 pb-12">
+        {/* CARD DA QUESTÃO ATIVA */}
+        {q && (
+          <div className="bg-slate-900/90 border border-slate-800 p-5 sm:p-7 rounded-3xl space-y-5 shadow-2xl animate-fade-in relative">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs sm:text-sm font-black text-emerald-400 uppercase tracking-widest">
+                  Questão {currentIdx + 1} de {currentQuestionList.length}
+                </span>
+                {isCurrentAnswered ? (
+                  <span className="text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                    Respondida
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-black uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                    Pendente
+                  </span>
+                )}
+              </div>
+
+              <span className="text-xs font-black text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-full border border-slate-800 uppercase tracking-wide">
+                Peso: {q.weight || 1.0} pts
+              </span>
+            </div>
+
+            <h3 className="text-base sm:text-lg font-black text-white leading-relaxed uppercase tracking-wide">
+              {q.title}
+            </h3>
+
+            {q.imageUrl && (
+              <div className="max-h-64 flex items-center justify-center p-2 bg-slate-950/60 rounded-2xl border border-slate-800">
+                <img
+                  src={formatImageUrl(q.imageUrl)}
+                  alt="Esquema da Questão"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                  className="max-h-60 max-w-full object-contain rounded-xl shadow-lg"
+                />
+              </div>
+            )}
+
+            {/* MÚLTIPLA ESCOLHA & VERDADEIRO / FALSO */}
+            {(q.type === 'MULTIPLE_CHOICE' || q.type === 'TRUE_FALSE') && (
+              <div className="grid grid-cols-1 gap-2.5">
+                {q.options?.map((opt: any, optIdx: number) => {
+                  const isSelected =
+                    currentVal === opt.id ||
+                    currentVal === optIdx ||
+                    (typeof currentVal === 'string' && currentVal.toLowerCase() === opt.text?.toLowerCase());
+
+                  return (
+                    <div
+                      key={opt.id || optIdx}
+                      onClick={() => handleSelectAnswer(q.id, opt.id || opt.text)}
+                      className={`p-3.5 sm:p-4 rounded-2xl border flex items-center gap-3 cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-emerald-600/30 border-emerald-500 text-white ring-1 ring-emerald-500 shadow-md shadow-emerald-950/40'
+                          : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-slate-700'
+                      }`}
+                    >
+                      <span
+                        className={`w-7 h-7 rounded-xl font-black text-xs flex items-center justify-center border shrink-0 ${
+                          isSelected
+                            ? 'bg-emerald-600 text-white border-emerald-400'
+                            : 'bg-slate-900 border-slate-700 text-slate-400'
+                        }`}
+                      >
+                        {q.type === 'TRUE_FALSE'
+                          ? opt.text?.toLowerCase() === 'verdadeiro' ? '✓' : '✗'
+                          : String.fromCharCode(65 + optIdx)}
+                      </span>
+                      <span className="text-xs sm:text-sm font-bold uppercase tracking-wide flex-1">
+                        {opt.text}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* PUZZLE / ORDENAÇÃO */}
+            {q.type === 'PUZZLE' && (
+              <div className="space-y-3 bg-slate-950/80 p-4 rounded-2xl border border-slate-800">
+                <span className="text-xs font-black text-purple-400 uppercase tracking-widest flex items-center gap-1.5 mb-2">
+                  <Layers className="w-4 h-4" />
+                  <span>Use as setas para organizar na ordem correta (1º ao 4º):</span>
+                </span>
+
+                <div className="space-y-2">
+                  {(puzzleStates[q.id] || q.options || []).map((pItem: any, pIdx: number) => (
+                    <div
+                      key={pItem.id || pIdx}
+                      className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between shadow-sm"
+                    >
+                      <div className="flex items-center gap-3 pr-2">
+                        <span className="w-7 h-7 rounded-lg bg-purple-600/30 text-purple-300 border border-purple-500/40 flex items-center justify-center font-black text-xs shrink-0">
+                          {pIdx + 1}º
+                        </span>
+                        <span className="text-xs sm:text-sm font-black text-white uppercase tracking-wide">
+                          {pItem.text}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col gap-1 shrink-0">
+                        <button
+                          type="button"
+                          disabled={pIdx === 0}
+                          onClick={() => handleMovePuzzleItem(q.id, pIdx, 'up')}
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-20 rounded-lg text-slate-200 cursor-pointer transition-colors"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={pIdx === (puzzleStates[q.id]?.length || q.options?.length || 4) - 1}
+                          onClick={() => handleMovePuzzleItem(q.id, pIdx, 'down')}
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-20 rounded-lg text-slate-200 cursor-pointer transition-colors"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* RESPOSTA RÁPIDA / TEXTO */}
+            {q.type === 'FAST_ANSWER' && (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Digite sua resposta aqui..."
+                  value={currentVal || ''}
+                  onChange={(e) => handleSelectAnswer(q.id, e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 p-4 rounded-2xl text-white text-sm font-black focus:outline-none uppercase tracking-wide shadow-inner"
+                />
+                <span className="text-[11px] text-slate-500 italic block">
+                  Você pode deixar em branco e responder depois clicando em Pular Questão.
+                </span>
+              </div>
+            )}
+
+            {/* SLIDER / ESTIMATIVA */}
+            {q.type === 'SLIDER' && (() => {
+              const conf = typeof q.sliderConfig === 'string' ? JSON.parse(q.sliderConfig || '{}') : q.sliderConfig || {};
+              const min = conf.min ?? 0;
+              const max = conf.max ?? 100;
+              const val = currentVal !== undefined ? currentVal : min;
+
+              return (
+                <div className="space-y-3 bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                  <div className="flex justify-between text-xs font-mono font-black text-slate-400 uppercase">
+                    <span>Min: {min}</span>
+                    <span className="text-base font-black text-amber-300 font-mono">{val} {conf.unit || ''}</span>
+                    <span>Max: {max}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={min}
+                    max={max}
+                    value={val}
+                    onChange={(e) => handleSelectAnswer(q.id, Number(e.target.value))}
+                    className="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                  />
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ⚡ CONTROLES DE NAVEGAÇÃO: ANTERIOR, PULAR E PRÓXIMA */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+          <button
+            type="button"
+            disabled={currentIdx === 0}
+            onClick={() => setCurrentIdx((prev) => Math.max(0, prev - 1))}
+            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-slate-200 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            <span>Anterior</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={currentIdx + 1 >= currentQuestionList.length}
+            onClick={() => setCurrentIdx((prev) => Math.min(currentQuestionList.length - 1, prev + 1))}
+            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-amber-400 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            title="Avança para a próxima deixando esta questão para responder mais tarde"
+          >
+            <HelpCircle className="w-4 h-4 text-amber-400" />
+            <span>Pular Questão</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={currentIdx + 1 >= currentQuestionList.length}
+            onClick={() => setCurrentIdx((prev) => Math.min(currentQuestionList.length - 1, prev + 1))}
+            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-slate-200 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+          >
+            <span>Próxima</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+
           <button
             type="button"
             disabled={isSubmitting}
             onClick={handlePreSubmit}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 font-black py-4 rounded-2xl text-white shadow-xl shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-95 text-base disabled:opacity-50"
+            className="col-span-2 sm:col-span-1 bg-emerald-600 hover:bg-emerald-500 font-black py-3.5 rounded-2xl text-white shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5 cursor-pointer transition-transform active:scale-95 text-xs disabled:opacity-50 uppercase tracking-wider"
           >
-            <Send className="w-5 h-5" />
-            <span>{isSubmitting ? 'Corrigindo Prova...' : 'Finalizar e Enviar Avaliação'}</span>
+            <Send className="w-4 h-4" />
+            <span>Entregar Prova</span>
           </button>
         </div>
+
       </div>
 
+      {/* MODAL DE CONFIRMAÇÃO DE QUESTÕES EM BRANCO */}
       {showConfirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in font-sans">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-fade-in font-sans">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center space-y-5 shadow-2xl">
             <div className="p-4 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-2xl inline-block mx-auto">
               <AlertTriangle className="w-10 h-10" />
             </div>
 
             <div className="space-y-2">
-              <h3 className="text-xl font-black text-white">Atenção: Questões em Branco</h3>
+              <h3 className="text-xl font-black text-white uppercase tracking-wide">Atenção: Questões em Branco</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Você deixou <strong className="text-amber-400 font-bold">{unansweredCount} questão(ões)</strong> sem responder. Questões em branco serão computadas como <strong>0,0 ponto</strong>.
+                Você deixou <strong className="text-amber-400 font-black">{blankQuestionIndexes.length} questão(ões)</strong> sem responder:
+              </p>
+              
+              <div className="flex flex-wrap items-center justify-center gap-1.5 py-1">
+                {blankQuestionIndexes.map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => {
+                      setCurrentIdx(num - 1);
+                      setShowConfirmModal(false);
+                    }}
+                    className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-mono font-bold hover:bg-amber-500 hover:text-slate-950 transition-colors"
+                    title={`Ir direto para a questão ${num}`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                Questões não respondidas serão computadas como <strong>0,0 ponto</strong>. Toque em qualquer número acima para ir direto a ela ou clique em revisar.
               </p>
             </div>
 
@@ -542,7 +743,7 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowConfirmModal(false)}
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer border border-slate-700"
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-black py-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer border border-slate-700 uppercase tracking-wider"
               >
                 <RotateCcw className="w-4 h-4" />
                 <span>Revisar Prova</span>
@@ -552,10 +753,10 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
                 type="button"
                 disabled={isSubmitting}
                 onClick={executeSubmission}
-                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-black py-3 rounded-xl text-xs transition-all shadow-lg shadow-amber-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-black py-3 rounded-xl text-xs transition-all shadow-lg shadow-amber-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 uppercase tracking-wider"
               >
                 <Send className="w-4 h-4" />
-                <span>Enviar Assim Mesmo</span>
+                <span>Entregar Assim Mesmo</span>
               </button>
             </div>
           </div>

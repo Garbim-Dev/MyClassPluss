@@ -27,12 +27,15 @@ export class AuthService {
     const cleanEmail = email.toLowerCase().trim();
     const cleanName = name.trim();
 
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: cleanEmail },
+    // ⚡ Verificação insensível a maiúsculas/minúsculas para blindar contra duplicidade
+    const existingUser = await this.prisma.user.findFirst({
+      where: {
+        email: { equals: cleanEmail, mode: 'insensitive' },
+      },
     });
 
     if (existingUser) {
-      throw new ConflictException('Já existe um usuário cadastrado com este e-mail.');
+      throw new ConflictException('Já existe um usuário cadastrado com este e-mail. Utilize a tela de Login.');
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -61,22 +64,65 @@ export class AuthService {
   }
 
   async login(body: any) {
-    const email = (body.email || body.username || '').toLowerCase().trim();
+    const rawEmail = (body.email || body.username || '').toString().trim();
+    const cleanEmail = rawEmail.toLowerCase();
     const password = body.password;
 
-    if (!email || !password) {
+    if (!cleanEmail || !password) {
       throw new BadRequestException('E-mail e senha são obrigatórios.');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { email },
+    // ⚡ Busca os usuários correspondentes a esse e-mail
+    const matchingUsers = await this.prisma.user.findMany({
+      where: {
+        email: { equals: cleanEmail, mode: 'insensitive' },
+      },
+      orderBy: { createdAt: 'asc' }, // Prioriza a conta original mais antiga
     });
 
-    if (!user) {
+    if (!matchingUsers || matchingUsers.length === 0) {
       throw new UnauthorizedException('E-mail não cadastrado. Clique na aba "Criar Conta" para se registrar.');
     }
 
-    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    // ⚡ Se houver contas duplicadas, localiza qual delas possui turmas ou instituições vinculadas
+    let user = matchingUsers[0];
+
+    if (matchingUsers.length > 1) {
+      for (const candidate of matchingUsers) {
+        const [hasInstitutions, hasClasses, hasQuizzes] = await Promise.all([
+          this.prisma.institution.findFirst({ where: { teacherId: candidate.id }, select: { id: true } }),
+          this.prisma.class.findFirst({ where: { teacherId: candidate.id }, select: { id: true } }),
+          this.prisma.quiz.findFirst({ where: { teacherId: candidate.id }, select: { id: true } }),
+        ]);
+
+        if (hasInstitutions || hasClasses || hasQuizzes) {
+          user = candidate;
+          break;
+        }
+      }
+    }
+
+    // Validação da senha com bcrypt
+    let isMatch = await bcrypt.compare(password, user.passwordHash);
+
+    // Fallback caso a nova senha tenha sido gravada em outra das contas duplicadas
+    if (!isMatch && matchingUsers.length > 1) {
+      for (const altUser of matchingUsers) {
+        if (altUser.id !== user.id) {
+          const altMatch = await bcrypt.compare(password, altUser.passwordHash);
+          if (altMatch) {
+            // Sincroniza o hash na conta principal com os dados
+            await this.prisma.user.update({
+              where: { id: user.id },
+              data: { passwordHash: altUser.passwordHash },
+            });
+            isMatch = true;
+            break;
+          }
+        }
+      }
+    }
+
     if (!isMatch) {
       throw new UnauthorizedException('Senha incorreta.');
     }
@@ -106,7 +152,6 @@ export class AuthService {
     });
 
     if (!user) {
-      // Por segurança, retornamos mensagem genérica para não expor e-mails cadastrados
       return { message: 'Se o e-mail estiver cadastrado, você receberá as instruções de recuperação.' };
     }
 
@@ -160,7 +205,6 @@ export class AuthService {
       `,
     };
 
-    // Tenta enviar o e-mail real ou cai no fallback de console (Mock)
     try {
       const smtpUser = process.env.SMTP_USER || process.env.MAIL_USER;
       const smtpPass = process.env.SMTP_PASS || process.env.MAIL_PASS;
@@ -194,7 +238,7 @@ export class AuthService {
     const user = await this.prisma.user.findFirst({
       where: {
         resetPasswordToken: token,
-        resetPasswordExpire: { gte: new Date() }, // Verifica se o token não expirou
+        resetPasswordExpire: { gte: new Date() },
       },
     });
 
@@ -206,7 +250,7 @@ export class AuthService {
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: {
+      data: { 
         passwordHash,
         resetPasswordToken: null,
         resetPasswordExpire: null,
@@ -216,40 +260,80 @@ export class AuthService {
     return { message: 'Senha redefinida com sucesso! Faça login com a nova senha.' };
   }
 
-  async studentJoin(data: { name: string; email: string; password?: string; classId: string }) {
-    const { name, email, password, classId } = data;
+  async studentJoin(data: {
+    name?: string;
+    email: string;
+    password?: string;
+    classId: string;
+    isNewStudent?: boolean;
+  }) {
+    const { name, email, password, classId, isNewStudent } = data;
 
-    if (!name || !email || !classId) {
-      throw new BadRequestException('Nome, e-mail/matrícula e ID da turma são obrigatórios.');
+    if (!email || !classId) {
+      throw new BadRequestException('Matrícula/CPF e identificador da turma são obrigatórios.');
     }
 
-    const cleanEmail = email.toLowerCase().trim();
-    const cleanName = name.trim();
-    const pass = password || '123456';
-    const passwordHash = await bcrypt.hash(pass, 10);
+    // ⚡ Higienização rigorosa da Matrícula/CPF ou E-mail
+    const rawDoc = email.trim().replace(/[.\-\/\s]/g, '');
+    const cleanKey = email.includes('@') ? email.toLowerCase().trim() : rawDoc.toLowerCase();
+    const userEmailKey = cleanKey.includes('@') ? cleanKey : `${cleanKey}@aluno.myclasspluss.local`;
 
-    let user = await this.prisma.user.findUnique({
-      where: { email: cleanEmail },
+    const pass = password || '123456';
+
+    // 1. Busca se o usuário já existe
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: { equals: userEmailKey, mode: 'insensitive' } },
+          { email: { equals: cleanKey, mode: 'insensitive' } },
+        ],
+      },
     });
 
-    if (!user) {
+    if (isNewStudent) {
+      // CADASTRO DE NOVO ALUNO
+      if (!name || !name.trim()) {
+        throw new BadRequestException('Nome completo é obrigatório para o primeiro cadastro.');
+      }
+      if (user) {
+        throw new ConflictException(
+          'Esta Matrícula/CPF já possui cadastro no sistema. Utilize a aba "Já sou Cadastrado".'
+        );
+      }
+
+      const passwordHash = await bcrypt.hash(pass, 10);
       user = await this.prisma.user.create({
         data: {
-          name: cleanName,
-          email: cleanEmail,
+          name: name.trim(),
+          email: userEmailKey,
           passwordHash,
           role: 'ALUNO',
         },
       });
     } else {
-      if (cleanName && user.name !== cleanName) {
+      // LOGIN DE ALUNO JÁ CADASTRADO
+      if (!user) {
+        throw new UnauthorizedException(
+          'Matrícula/CPF não encontrado. Se este for o seu primeiro acesso, clique na aba "Primeiro Acesso".'
+        );
+      }
+
+      // Validação de senha
+      const isMatch = await bcrypt.compare(pass, user.passwordHash);
+      if (!isMatch) {
+        throw new UnauthorizedException('Senha incorreta.');
+      }
+
+      // Atualiza o nome caso tenha sido informado com formato mais completo
+      if (name && name.trim().length > user.name.length) {
         user = await this.prisma.user.update({
           where: { id: user.id },
-          data: { name: cleanName },
+          data: { name: name.trim() },
         });
       }
     }
 
+    // 2. Garante o vínculo único na turma
     const classExists = await this.prisma.class.findUnique({
       where: { id: classId },
     });
@@ -282,7 +366,7 @@ export class AuthService {
       user: {
         id: user.id,
         name: user.name,
-        email: user.email,
+        email: cleanKey,
         role: user.role,
       },
     };

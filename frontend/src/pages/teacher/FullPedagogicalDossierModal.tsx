@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ExportService } from '../../services/exportService';
 import {
   FileText,
@@ -15,6 +15,8 @@ import {
   Gamepad2,
   Wrench,
   FileSpreadsheet,
+  BarChart3,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface StudentDossierItem {
@@ -32,6 +34,15 @@ interface StudentDossierItem {
   answersMap?: { [questionIndex: number]: boolean };
 }
 
+export interface QuestionHeatmapItem {
+  questionNumber: number;
+  totalAnswers: number;
+  totalCorrect: number;
+  accuracyRate: number;
+  difficultyLevel: 'EASY' | 'MEDIUM' | 'HARD';
+  diagnosis: string;
+}
+
 interface FullPedagogicalDossierModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -42,6 +53,7 @@ interface FullPedagogicalDossierModalProps {
   subjectName: string;
   totalQuestions: number;
   leaderboard: StudentDossierItem[];
+  questionsHeatmap?: QuestionHeatmapItem[];
 }
 
 export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalProps> = ({
@@ -54,6 +66,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
   subjectName,
   totalQuestions = 1,
   leaderboard = [],
+  questionsHeatmap: externalHeatmap,
 }) => {
   if (!isOpen) return null;
 
@@ -67,6 +80,61 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
           leaderboard.reduce((acc, s) => acc + Number(s.totalGrade ?? 0), 0) / totalStudents
         ).toFixed(1)
       : '0.0';
+
+  // ⚡ GERAÇÃO/CONSOLIDAÇÃO DA MATRIZ DE CALOR PEDAGÓGICA
+  const computedHeatmap = useMemo(() => {
+    if (externalHeatmap && externalHeatmap.length > 0) {
+      return externalHeatmap;
+    }
+
+    const items: QuestionHeatmapItem[] = [];
+    const numQuestions = Math.max(totalQuestions, 1);
+
+    for (let qIdx = 0; qIdx < numQuestions; qIdx++) {
+      let correctAnswers = 0;
+      let answeredCount = 0;
+
+      leaderboard.forEach((student) => {
+        const matrix = student.answersMatrix || student.answersMap || {};
+        if (matrix[qIdx] !== undefined) {
+          answeredCount++;
+          if (matrix[qIdx] === true) {
+            correctAnswers++;
+          }
+        }
+      });
+
+      const totalAns = answeredCount > 0 ? answeredCount : totalStudents;
+      const rate = totalAns > 0 ? Math.round((correctAnswers / totalAns) * 100) : 0;
+
+      let level: 'EASY' | 'MEDIUM' | 'HARD' = 'EASY';
+      let diagnosisText = 'Conteúdo plenamente assimilado pela turma.';
+
+      if (rate < 50) {
+        level = 'HARD';
+        diagnosisText = 'Ponto Crítico: Exige revisão imediata de conteúdo pelo instrutor.';
+      } else if (rate <= 74) {
+        level = 'MEDIUM';
+        diagnosisText = 'Ponto de Atenção: Assimilação moderada; recomendado reforço conceitual.';
+      }
+
+      items.push({
+        questionNumber: qIdx + 1,
+        totalAnswers: totalAns,
+        totalCorrect: correctAnswers,
+        accuracyRate: rate,
+        difficultyLevel: level,
+        diagnosis: diagnosisText,
+      });
+    }
+
+    return items;
+  }, [externalHeatmap, leaderboard, totalQuestions, totalStudents]);
+
+  // Contadores analíticos para o sumário da Coordenação
+  const criticalCount = computedHeatmap.filter((q) => q.difficultyLevel === 'HARD').length;
+  const attentionCount = computedHeatmap.filter((q) => q.difficultyLevel === 'MEDIUM').length;
+  const masteredCount = computedHeatmap.filter((q) => q.difficultyLevel === 'EASY').length;
 
   const handlePrint = () => {
     window.print();
@@ -87,7 +155,9 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
       s.isApproved ? 'Aprovado' : 'Abaixo da Média',
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(';'), ...rows.map((e) => e.join(';'))].join('\n');
+    const csvContent =
+      'data:text/csv;charset=utf-8,\uFEFF' +
+      [headers.join(';'), ...rows.map((e) => e.join(';'))].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
@@ -136,7 +206,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
       <div className="bg-[#0b1120] border border-slate-800 rounded-3xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-slate-100">
         
         {/* CABEÇALHO */}
-        <div className="p-6 bg-[#080d1a] border-b border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="p-6 bg-[#080d1a] border-b border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-3.5">
             <div className="p-3 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-2xl">
               <FileText className="w-6 h-6" />
@@ -149,7 +219,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Relatório consolidado com matriz de acertos, pontuações de velocidade e notas finais
+                Relatório consolidado com matriz de acertos, pontuações de velocidade e mapa de calor
               </p>
             </div>
           </div>
@@ -164,7 +234,6 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
               <span>Imprimir</span>
             </button>
 
-            {/* ⚡ BOTÃO DE EXPORTAÇÃO PARA EXCEL (XLSX) */}
             <button
               type="button"
               onClick={() =>
@@ -183,7 +252,6 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
               <span>Excel (.xlsx)</span>
             </button>
 
-            {/* ⚡ BOTÃO DE EXPORTAÇÃO PARA PDF OFICIAL */}
             <button
               type="button"
               onClick={() =>
@@ -192,14 +260,16 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                   courseName,
                   classCode,
                   subjectName,
+                  totalQuestions,
                   students: leaderboard,
+                  instructorName: 'Sidnei Garbim da Silva', // Ou o nome do instrutor logado
                 })
               }
               className="px-3.5 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-red-600/30 flex items-center gap-1.5 transition-colors cursor-pointer"
-              title="Baixar relatório oficial em PDF"
+              title="Baixar ata oficial em PDF pronta para assinatura"
             >
               <FileText className="w-4 h-4 text-white" />
-              <span>PDF Oficial</span>
+              <span>Boletim em PDF (Ata)</span>
             </button>
 
             <button
@@ -222,182 +292,302 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
           </div>
         </div>
 
-        {/* CARDS DE INFORMAÇÕES GERAIS */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 p-6 bg-[#080d1a]/50 border-b border-slate-800">
-          
-          {/* 1. CURSO / TURMA */}
-          <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <BookOpen className="w-3.5 h-3.5 text-blue-400" />
-              <span>Curso / Turma</span>
-            </span>
-            <p className="text-sm font-black text-white truncate">{courseName || 'Curso Geral'}</p>
-            <span className="text-xs font-mono font-bold text-blue-400 block truncate">{classCode}</span>
-          </div>
-
-          {/* 2. DISCIPLINA / ATIVIDADE */}
-          <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <GraduationCap className="w-3.5 h-3.5 text-purple-400" />
-              <span>Disciplina / Atividade</span>
-            </span>
-            <p className="text-sm font-black text-white truncate">{subjectName || 'Geral'}</p>
-            <span className="text-xs text-slate-300 font-medium block truncate">{quizTitle}</span>
-          </div>
-
-          {/* 3. MODALIDADE DA ATIVIDADE */}
-          <div className={`${modality.bg} border ${modality.border} p-4 rounded-2xl space-y-1 shadow-sm`}>
-            <span className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${modality.textColor}`}>
-              {modality.icon}
-              <span>Modalidade</span>
-            </span>
-            <p className="text-sm font-black text-white">{modality.title}</p>
-            <span className="text-[11px] text-slate-400 block leading-tight">{modality.description}</span>
-          </div>
-
-          {/* 4. PARTICIPAÇÃO & MÉDIA */}
-          <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Users className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Participação & Média</span>
-            </span>
-            <p className="text-sm font-black text-white">
-              {totalStudents} <span className="text-xs font-normal text-slate-400">alunos</span>
-            </p>
-            <span className="text-xs font-bold text-emerald-400 block">
-              Média da Turma: {averageGrade} pts
-            </span>
-          </div>
-
-          {/* 5. APROVEITAMENTO */}
-          <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Award className="w-3.5 h-3.5 text-amber-400" />
-              <span>Aproveitamento</span>
-            </span>
-            <p className="text-lg font-black text-amber-300">{approvalRate}%</p>
-            <span className="text-xs text-slate-400 block">
-              {approvedCount} de {totalStudents} aprovados
-            </span>
-          </div>
-        </div>
-
-        {/* TABELA CONSOLIDADA COM MATRIZ DE ACERTOS */}
-        <div className="p-6 flex-1 overflow-y-auto space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Quadro de Rendimento por Participante
-            </h3>
-            <div className="flex items-center gap-3 text-[11px] font-bold">
-              <span className="flex items-center gap-1 text-emerald-400">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Acerto
+        {/* CORPO DO MODAL COM ROLAGEM ÚNICA */}
+        <div className="flex-1 overflow-y-auto space-y-6 p-6">
+          {/* CARDS DE INFORMAÇÕES GERAIS */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+            <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <BookOpen className="w-3.5 h-3.5 text-blue-400" />
+                <span>Curso / Turma</span>
               </span>
-              <span className="flex items-center gap-1 text-red-400">
-                <XCircle className="w-3.5 h-3.5" /> Erro
+              <p className="text-sm font-black text-white truncate">{courseName || 'Curso Geral'}</p>
+              <span className="text-xs font-mono font-bold text-blue-400 block truncate">{classCode}</span>
+            </div>
+
+            <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <GraduationCap className="w-3.5 h-3.5 text-purple-400" />
+                <span>Disciplina / Atividade</span>
+              </span>
+              <p className="text-sm font-black text-white truncate">{subjectName || 'Geral'}</p>
+              <span className="text-xs text-slate-300 font-medium block truncate">{quizTitle}</span>
+            </div>
+
+            <div className={`${modality.bg} border ${modality.border} p-4 rounded-2xl space-y-1 shadow-sm`}>
+              <span className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${modality.textColor}`}>
+                {modality.icon}
+                <span>Modalidade</span>
+              </span>
+              <p className="text-sm font-black text-white">{modality.title}</p>
+              <span className="text-[11px] text-slate-400 block leading-tight">{modality.description}</span>
+            </div>
+
+            <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Participação & Média</span>
+              </span>
+              <p className="text-sm font-black text-white">
+                {totalStudents} <span className="text-xs font-normal text-slate-400">alunos</span>
+              </p>
+              <span className="text-xs font-bold text-emerald-400 block">
+                Média da Turma: {averageGrade} pts
+              </span>
+            </div>
+
+            <div className="bg-[#0f172a] border border-slate-800/80 p-4 rounded-2xl space-y-1">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Award className="w-3.5 h-3.5 text-amber-400" />
+                <span>Aproveitamento</span>
+              </span>
+              <p className="text-lg font-black text-amber-300">{approvalRate}%</p>
+              <span className="text-xs text-slate-400 block">
+                {approvedCount} de {totalStudents} aprovados
               </span>
             </div>
           </div>
 
-          <div className="border border-slate-800 rounded-2xl overflow-hidden shadow-xl bg-[#090e1a]">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-900/90 text-slate-400 font-bold border-b border-slate-800 uppercase text-[10px]">
-                <tr>
-                  <th className="py-3 px-4 w-12 text-center">Pos.</th>
-                  <th className="py-3 px-4">Nome do Aluno</th>
-                  <th className="py-3 px-4">Equipe</th>
-                  {Array.from({ length: totalQuestions }).map((_, qIdx) => (
-                    <th key={qIdx} className="py-3 px-2 text-center w-10">
-                      Q{qIdx + 1}
-                    </th>
-                  ))}
-                  <th className="py-3 px-4 text-center text-emerald-400">Acertos</th>
-                  <th className="py-3 px-4 text-center font-black text-white">Nota Final</th>
-                  <th className="py-3 px-4 text-right">Situação</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {leaderboard.length === 0 ? (
-                  <tr>
-                    <td colSpan={6 + totalQuestions} className="py-12 text-center text-slate-500 italic">
-                      Nenhum resultado registrado para esta sessão.
-                    </td>
+          {/* ========================================================= */}
+          {/* ⚡ MAPA DE CALOR PEDAGÓGICO / MATRIZ DE DIFICULDADE       */}
+          {/* ========================================================= */}
+          <div className="bg-[#090e1a] border border-slate-800 p-5 rounded-3xl space-y-4 shadow-xl">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">
+                  Matriz de Dificuldade por Questão (Diagnóstico Pedagógico)
+                </h3>
+              </div>
+              <span className="text-xs text-slate-400 font-mono">
+                {computedHeatmap.length} Questões Avaliadas
+              </span>
+            </div>
+
+            {/* CARDS TOTALIZADORES DO DIAGNÓSTICO */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="p-3.5 bg-emerald-950/30 border border-emerald-500/30 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold text-emerald-400 uppercase block">Conteúdo Consolidado</span>
+                  <span className="text-xs text-slate-400">&gt; 75% de Acertos</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-emerald-400 font-black text-xl">
+                  <CheckCircle2 className="w-5 h-5" />
+                  <span>{masteredCount}</span>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-amber-950/30 border border-amber-500/30 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold text-amber-400 uppercase block">Ponto de Atenção</span>
+                  <span className="text-xs text-slate-400">50% a 74% de Acertos</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-amber-400 font-black text-xl">
+                  <AlertTriangle className="w-5 h-5" />
+                  <span>{attentionCount}</span>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-rose-950/30 border border-rose-500/30 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold text-rose-400 uppercase block">Crítico / Risco</span>
+                  <span className="text-xs text-slate-400">&lt; 50% de Acertos</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-rose-400 font-black text-xl">
+                  <XCircle className="w-5 h-5" />
+                  <span>{criticalCount}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* GRADE DO MAPA DE CALOR COM BARRAS PROPORCIONAIS */}
+            <div className="border border-slate-800 rounded-2xl overflow-hidden">
+              <table className="w-full text-left text-xs text-slate-300 border-collapse">
+                <thead>
+                  <tr className="bg-slate-900 border-b border-slate-800 text-slate-400 font-bold uppercase text-[10px]">
+                    <th className="p-3 text-center w-14">Questão</th>
+                    <th className="p-3 text-center w-28">Taxa de Acertos</th>
+                    <th className="p-3 w-56">Retenção Visual da Turma</th>
+                    <th className="p-3">Diagnóstico Pedagógico & Ação Recomendada</th>
                   </tr>
-                ) : (
-                  leaderboard.map((student, sIdx) => {
-                    const matrix = student.answersMatrix || student.answersMap || {};
-                    const isApproved = Boolean(student.isApproved);
-                    const finalGrade = Number(student.totalGrade ?? (student.score ? (student.score / 1000) * 10 : 0)).toFixed(1);
+                </thead>
+                <tbody className="divide-y divide-slate-800/60 bg-slate-950/40">
+                  {computedHeatmap.map((item) => {
+                    const isEasy = item.difficultyLevel === 'EASY';
+                    const isMedium = item.difficultyLevel === 'MEDIUM';
+
+                    const badgeColor = isEasy
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                      : isMedium
+                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                      : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
+
+                    const barColor = isEasy
+                      ? 'bg-emerald-500'
+                      : isMedium
+                      ? 'bg-amber-500'
+                      : 'bg-rose-500';
 
                     return (
-                      <tr key={student.userId || sIdx} className="hover:bg-slate-800/40 transition-colors">
-                        <td className="py-3.5 px-4 text-center font-black text-slate-400 font-mono">
-                          #{student.rank || sIdx + 1}
+                      <tr key={item.questionNumber} className="hover:bg-slate-900/50 transition-colors">
+                        <td className="p-3 text-center font-mono font-black text-slate-300 text-xs">
+                          Q{item.questionNumber}
                         </td>
-                        <td className="py-3.5 px-4 font-bold text-white whitespace-nowrap">
-                          {student.userName}
-                        </td>
-                        <td className="py-3.5 px-4">
-                          {student.teamName ? (
-                            <span
-                              className="text-[10px] font-black px-2 py-0.5 rounded-md text-white shadow-sm inline-block"
-                              style={{ backgroundColor: student.teamColor || '#6366f1' }}
-                            >
-                              {student.teamName}
-                            </span>
-                          ) : (
-                            <span className="text-slate-500 text-[11px]">—</span>
-                          )}
-                        </td>
-
-                        {Array.from({ length: totalQuestions }).map((_, qIdx) => {
-                          const isCorrect = matrix[qIdx] === true;
-
-                          return (
-                            <td key={qIdx} className="py-3.5 px-2 text-center">
-                              {isCorrect ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-400 mx-auto" />
-                              ) : (
-                                <XCircle className="w-4 h-4 text-red-400 mx-auto" />
-                              )}
-                            </td>
-                          );
-                        })}
-
-                        <td className="py-3.5 px-4 text-center font-mono font-bold text-emerald-400">
-                          {student.totalCorrect !== undefined ? `${student.totalCorrect} / ${totalQuestions}` : '—'}
-                        </td>
-
-                        <td className="py-3.5 px-4 text-center font-mono font-black text-sm text-white">
-                          {finalGrade} <span className="text-[10px] text-slate-500 font-normal">/ 10</span>
-                        </td>
-
-                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                          <span
-                            className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${
-                              isApproved
-                                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                                : 'bg-red-500/20 text-red-300 border-red-500/30'
-                            }`}
-                          >
-                            {isApproved ? 'Aprovado' : 'Abaixo de 7,0'}
+                        <td className="p-3 text-center">
+                          <span className={`inline-block px-2.5 py-0.5 rounded-full font-mono font-black border text-[11px] ${badgeColor}`}>
+                            {item.accuracyRate}%
                           </span>
+                        </td>
+                        <td className="p-3">
+                          <div className="w-full bg-slate-900 h-2.5 rounded-full overflow-hidden border border-slate-800">
+                            <div
+                              className={`h-full ${barColor} transition-all duration-500`}
+                              style={{ width: `${Math.max(item.accuracyRate, 4)}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-slate-500 font-mono mt-0.5 block">
+                            {item.totalCorrect} de {item.totalAnswers} alunos acertaram
+                          </span>
+                        </td>
+                        <td className="p-3 text-[11px] font-medium text-slate-300">
+                          {item.diagnosis}
                         </td>
                       </tr>
                     );
-                  })
-                )}
-              </tbody>
-            </table>
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* TABELA CONSOLIDADA COM MATRIZ DE ACERTOS POR ALUNO */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Quadro de Rendimento por Participante
+              </h3>
+              <div className="flex items-center gap-3 text-[11px] font-bold">
+                <span className="flex items-center gap-1 text-emerald-400">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Acerto
+                </span>
+                <span className="flex items-center gap-1 text-red-400">
+                  <XCircle className="w-3.5 h-3.5" /> Erro
+                </span>
+              </div>
+            </div>
+
+            <div className="border border-slate-800 rounded-2xl overflow-hidden shadow-xl bg-[#090e1a]">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300 border-collapse">
+                  <thead className="bg-slate-900/90 text-slate-400 font-bold border-b border-slate-800 uppercase text-[10px]">
+                    <tr>
+                      <th className="py-3 px-4 w-12 text-center">Pos.</th>
+                      <th className="py-3 px-4">Nome do Aluno</th>
+                      <th className="py-3 px-4">Equipe</th>
+                      {Array.from({ length: totalQuestions }).map((_, qIdx) => (
+                        <th key={qIdx} className="py-3 px-2 text-center w-10">
+                          Q{qIdx + 1}
+                        </th>
+                      ))}
+                      <th className="py-3 px-4 text-center text-emerald-400">Acertos</th>
+                      <th className="py-3 px-4 text-center font-black text-white">Nota Final</th>
+                      <th className="py-3 px-4 text-right">Situação</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {leaderboard.length === 0 ? (
+                      <tr>
+                        <td colSpan={6 + totalQuestions} className="py-12 text-center text-slate-500 italic">
+                          Nenhum resultado registrado para esta sessão.
+                        </td>
+                      </tr>
+                    ) : (
+                      leaderboard.map((student, sIdx) => {
+                        const matrix = student.answersMatrix || student.answersMap || {};
+                        const isApproved = Boolean(student.isApproved);
+                        const finalGrade = Number(
+                          student.totalGrade ?? (student.score ? (student.score / 1000) * 10 : 0)
+                        ).toFixed(1);
+
+                        return (
+                          <tr key={student.userId || sIdx} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="py-3.5 px-4 text-center font-black text-slate-400 font-mono">
+                              #{student.rank || sIdx + 1}
+                            </td>
+                            <td className="py-3.5 px-4 font-bold text-white whitespace-nowrap">
+                              {student.userName}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              {student.teamName ? (
+                                <span
+                                  className="text-[10px] font-black px-2 py-0.5 rounded-md text-white shadow-sm inline-block"
+                                  style={{ backgroundColor: student.teamColor || '#6366f1' }}
+                                >
+                                  {student.teamName}
+                                </span>
+                              ) : (
+                                <span className="text-slate-500 text-[11px]">—</span>
+                              )}
+                            </td>
+
+                            {Array.from({ length: totalQuestions }).map((_, qIdx) => {
+                              const isCorrect = matrix[qIdx] === true;
+
+                              return (
+                                <td key={qIdx} className="py-3.5 px-2 text-center">
+                                  {isCorrect ? (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-400 mx-auto" />
+                                  ) : (
+                                    <XCircle className="w-4 h-4 text-red-400 mx-auto" />
+                                  )}
+                                </td>
+                              );
+                            })}
+
+                            <td className="py-3.5 px-4 text-center font-mono font-bold text-emerald-400">
+                              {student.totalCorrect !== undefined
+                                ? `${student.totalCorrect} / ${totalQuestions}`
+                                : '—'}
+                            </td>
+
+                            <td className="py-3.5 px-4 text-center font-mono font-black text-sm text-white">
+                              {finalGrade} <span className="text-[10px] text-slate-500 font-normal">/ 10</span>
+                            </td>
+
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              <span
+                                className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${
+                                  isApproved
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                    : 'bg-red-500/20 text-red-300 border-red-500/30'
+                                }`}
+                              >
+                                {isApproved ? 'Aprovado' : 'Abaixo de 7,0'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
 
         {/* RODAPÉ */}
-        <div className="p-4 bg-[#080d1a] border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
-          <span>OffClass • Sistema de Gestão de Aprendizagem & Avaliação</span>
-          <span>Emitido em: {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+        <div className="p-4 bg-[#080d1a] border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-500 shrink-0">
+          <span>MyClassPluss • Sistema de Gestão de Aprendizagem & Avaliação</span>
+          <span>
+            Emitido em: {new Date().toLocaleDateString('pt-BR')} às{' '}
+            {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+          </span>
         </div>
 
       </div>
     </div>
   );
 };
+
+export default FullPedagogicalDossierModal;

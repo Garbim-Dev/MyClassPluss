@@ -8,7 +8,11 @@ import * as fs from 'fs';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  app.enableCors();
+  app.enableCors({
+    origin: '*',
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true,
+  });
 
   // ⚡ Aumenta o limite de tamanho para requisições JSON e URL-encoded
   app.use(express.json({ limit: '50mb' }));
@@ -25,9 +29,15 @@ async function bootstrap() {
     fs.mkdirSync(uploadDirRoot, { recursive: true });
   }
 
-  // ⚡ Configura o servidor estático para servir os arquivos da pasta 'uploads'
+  // ⚡ Servidor de arquivos estáticos com cabeçalhos adequados para visualização mobile
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads/',
+    setHeaders: (res, path) => {
+      if (path.endsWith('.pdf')) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline');
+      }
+    },
   });
 
   await app.listen(3000, '0.0.0.0');

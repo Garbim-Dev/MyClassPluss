@@ -43,7 +43,7 @@ export const Login: React.FC = () => {
       const res = await api.post('/auth/login', { email, password });
       const { token, user } = res.data;
 
-      localStorage.setItem('@OffClass:token', token);
+      localStorage.setItem('@MyClassPluss:token', token);
       localStorage.setItem('user', JSON.stringify(user));
 
       if (user.role === 'PROFESSOR') {

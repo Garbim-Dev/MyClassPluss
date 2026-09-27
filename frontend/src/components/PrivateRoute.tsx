@@ -10,7 +10,7 @@ export const PrivateRoute: React.FC<PrivateRouteProps> = ({ children }) => {
   const token =
     localStorage.getItem('@MyClassPluss:token') ||
     localStorage.getItem('token') ||
-    localStorage.getItem('@OffClass:token');
+    localStorage.getItem('@MyClassPluss:token');
 
   const userStr = localStorage.getItem('user');
 

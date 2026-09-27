@@ -8,8 +8,15 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { extname, join } from 'path';
 import { AuthGuard } from '@nestjs/passport';
+import * as fs from 'fs';
+
+// ⚡ Garante que o diretório 'uploads' exista na raiz do backend
+const uploadDir = join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 @Controller('upload')
 @UseGuards(AuthGuard('jwt'))
@@ -18,37 +25,62 @@ export class UploadController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({
-        destination: './uploads', // Pasta na raiz do projeto backend
+        destination: uploadDir,
         filename: (req, file, callback) => {
+          // Remove acentos e caracteres especiais para evitar quebra no navegador mobile
+          const cleanOriginalName = file.originalname
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9.-]/g, '_');
+
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          callback(null, `img-${uniqueSuffix}${extname(file.originalname)}`);
+          const extension = extname(cleanOriginalName) || '.pdf';
+          callback(null, `doc-${uniqueSuffix}${extension}`);
         },
       }),
       limits: {
-        fileSize: 5 * 1024 * 1024, // Limite de 5MB por imagem
+        fileSize: 100 * 1024 * 1024, // ⚡ Aumentado para 100MB (adequado para PDFs e apresentações)
       },
       fileFilter: (req, file, callback) => {
-        if (!file.mimetype.match(/\/(jpg|jpeg|png|webp|gif)$/)) {
-          return callback(new BadRequestException('Apenas arquivos de imagem são permitidos!'), false);
+        // ⚡ Permite Imagens, PDFs e Apresentações
+        const allowedMimes = [
+          'image/jpeg',
+          'image/png',
+          'image/webp',
+          'image/gif',
+          'application/pdf',
+          'application/vnd.ms-powerpoint',
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        ];
+
+        const isAllowedExtension = file.originalname.match(/\.(jpg|jpeg|png|webp|gif|pdf|ppt|pptx)$/i);
+
+        if (allowedMimes.includes(file.mimetype) || isAllowedExtension) {
+          return callback(null, true);
         }
-        callback(null, true);
+
+        return callback(
+          new BadRequestException('Formato de arquivo não suportado! Envie imagens (JPG/PNG) ou documentos (PDF/PPT).'),
+          false,
+        );
       },
     }),
   )
   uploadFile(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
-      throw new BadRequestException('Nenhum arquivo enviado.');
+      throw new BadRequestException('Nenhum arquivo enviado ou campo inválido.');
     }
 
-    // Retorna a URL completa ou relativa para o frontend acessar
-    // Exemplo: http://localhost:3000/uploads/img-123456789.png
-    const serverUrl = process.env.BACKEND_URL || 'http://localhost:3000';
-    const fileUrl = `${serverUrl}/uploads/${file.filename}`;
+    // ⚡ Retorna caminho relativo padronizado '/uploads/nome-do-arquivo.ext'
+    const relativeUrl = `/uploads/${file.filename}`;
 
     return {
       success: true,
-      url: fileUrl,
+      url: relativeUrl,
+      fileUrl: relativeUrl,
       filename: file.filename,
+      originalName: file.originalname,
+      size: file.size,
     };
   }
 }

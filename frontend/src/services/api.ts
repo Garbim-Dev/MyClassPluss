@@ -12,8 +12,8 @@ export const api = axios.create({
 api.interceptors.request.use((config) => {
   const token =
     localStorage.getItem('@MyClassPluss:token') ||
-    sessionStorage.getItem('@OffClass:token') ||
-    localStorage.getItem('@OffClass:token') ||
+    sessionStorage.getItem('@MyClassPluss:token') ||
+    localStorage.getItem('@MyClassPluss:token') ||
     localStorage.getItem('token');
 
   if (token) {

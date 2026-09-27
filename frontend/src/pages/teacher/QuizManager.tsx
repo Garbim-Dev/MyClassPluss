@@ -3,7 +3,11 @@ import { api } from '../../services/api';
 import { AiImportModal } from './AiImportModal';
 import { AvalManager } from './AvalManager';
 import { PratManager } from './PratManager';
+import { ExamPrintModal } from './ExamPrintModal';
+import { PersonalQuestionBankModal } from './PersonalQuestionBankModal';
 import {
+  BookmarkCheck,
+  BookmarkPlus,
   PlusCircle,
   Trash2,
   Sparkles,
@@ -24,6 +28,7 @@ import {
   Shield,
   HelpCircle,
   Globe,
+  Printer
 } from 'lucide-react';
 
 type QuestionType = 'MULTIPLE_CHOICE' | 'TRUE_FALSE' | 'FAST_ANSWER' | 'SLIDER' | 'PUZZLE';
@@ -52,6 +57,8 @@ interface QuestionDraft {
 export const QuizManager: React.FC = () => {
   const [activityType, setActivityType] = useState<ActivityType>('QUIZ_INTERATIVO');
 
+  const [isQuestionBankOpen, setIsQuestionBankOpen] = useState(false);
+
   const [subjects, setSubjects] = useState<any[]>([]);
   const [quizzes, setQuizzes] = useState<any[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
@@ -68,6 +75,27 @@ export const QuizManager: React.FC = () => {
   const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+
+  const [printExamData, setPrintExamData] = useState<any | null>(null);
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+
+  // ⚡ Normaliza dinamicamente a URL da imagem para o IP e porta atuais do backend (:3000)
+  const formatImageUrl = (url?: string | null): string => {
+    if (!url) return '';
+    let target = url.trim();
+
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      try {
+        const parsed = new URL(target);
+        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
+      } catch (e) {
+        return encodeURI(target);
+      }
+    }
+
+    const slash = target.startsWith('/') ? '' : '/';
+    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
+  };
 
   const createInitialQuestion = (id: string): QuestionDraft => ({
     id,
@@ -150,6 +178,67 @@ export const QuizManager: React.FC = () => {
     setQuestions(updated);
   };
 
+  const handleImportFromPersonalBank = (savedQ: any) => {
+    const newQuestion: QuestionDraft = {
+      id: Date.now().toString(),
+      title: savedQ.title || '',
+      imageUrl: savedQ.imageUrl || '',
+      type: savedQ.type || 'MULTIPLE_CHOICE',
+      timeLimitSeconds: Number(savedQ.timeLimitSeconds) || 30,
+      weight: Number(savedQ.weight) || 2.5,
+      justification: savedQ.justification || '',
+      options: savedQ.options && savedQ.options.length > 0 ? savedQ.options : [
+        { text: '', color: 'red', isCorrect: true, correctOrder: 0 },
+        { text: '', color: 'blue', isCorrect: false, correctOrder: 1 },
+        { text: '', color: 'yellow', isCorrect: false, correctOrder: 2 },
+        { text: '', color: 'green', isCorrect: false, correctOrder: 3 },
+      ],
+      tfCorrectIndex: savedQ.tfCorrectIndex ?? 1,
+      shortAnswerKeywords: savedQ.shortAnswerKeywords || ['', '', ''],
+      sliderConfig: savedQ.sliderConfig || { min: 0, max: 100, target: 50, tolerance: 0, unit: 'bar' },
+    };
+
+    setQuestions((prev) => [...prev, newQuestion]);
+  };
+
+  const handleSaveToPersonalBank = async (q: QuestionDraft) => {
+    const tagInput = window.prompt(
+      'Digite tags para catalogar esta questão no seu acervo (separadas por vírgula):',
+      'Segurança, NR-12'
+    );
+    if (tagInput === null) return;
+
+    try {
+      const tags = tagInput.split(',').map((t) => t.trim().toLowerCase());
+      await api.post('/academic/personal-questions', {
+        title: q.title,
+        type: q.type,
+        weight: q.weight,
+        justification: q.justification,
+        imageUrl: q.imageUrl,
+        options: q.options,
+        sliderConfig: q.sliderConfig,
+        tags,
+        isFavorite: true,
+      });
+      alert('Questão adicionada ao seu Banco Pessoal com sucesso!');
+    } catch (err) {
+      alert('Erro ao salvar no banco pessoal.');
+    }
+  };
+
+  const handleOpenPrintPreview = async (quiz: any) => {
+    try {
+      const res = await api.get(`/quizzes/${quiz.id}`);
+      setPrintExamData(res.data || quiz);
+      setIsPrintModalOpen(true);
+    } catch (err) {
+      console.warn('Não foi possível carregar os detalhes pela API, usando dados locais:', err);
+      setPrintExamData(quiz);
+      setIsPrintModalOpen(true);
+    }
+  };
+
   const handleUpdateSliderConfig = (qIndex: number, field: string, value: any) => {
     const updated = [...questions];
     (updated[qIndex].sliderConfig as any)[field] = value;
@@ -170,8 +259,10 @@ export const QuizManager: React.FC = () => {
         },
       });
 
-      if (res.data && res.data.url) {
-        handleUpdateQuestion(qIndex, 'imageUrl', res.data.url);
+      if (res.data) {
+        // ⚡ Salva o caminho relativo confiável para resolução dinâmica
+        const savedUrl = res.data.url || res.data.fileUrl || `/uploads/${res.data.filename}`;
+        handleUpdateQuestion(qIndex, 'imageUrl', savedUrl);
       }
     } catch (err: any) {
       console.error('Erro ao enviar imagem para o servidor:', err);
@@ -586,6 +677,14 @@ export const QuizManager: React.FC = () => {
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={() => setIsQuestionBankOpen(true)}
+                className="bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <BookmarkCheck className="w-4 h-4 text-amber-400" />
+                <span>Meu Banco de Questões</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setIsAiModalOpen(true)}
                 className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-transform active:scale-95 cursor-pointer"
               >
@@ -698,7 +797,14 @@ export const QuizManager: React.FC = () => {
                           <option value={300}>5 min</option>
                         </select>
                       </div>
-
+                      <button
+                        type="button"
+                        onClick={() => handleSaveToPersonalBank(q)}
+                        className="text-slate-500 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer"
+                        title="Salvar esta questão no meu Acervo Pessoal"
+                      >
+                        <BookmarkPlus className="w-4 h-4" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleRemoveQuestion(qIdx)}
@@ -718,7 +824,7 @@ export const QuizManager: React.FC = () => {
                     className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 p-3 rounded-xl text-white text-sm font-semibold focus:outline-none"
                   />
 
-                  {/* IMAGEM */}
+                  {/* IMAGEM COM NORMALIZADOR DINÂMICO E SUPORTE A ERRO */}
                   <div className="p-3 bg-slate-900/60 border border-slate-800 border-dashed rounded-2xl flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="w-4 h-4 text-purple-400" />
@@ -727,19 +833,32 @@ export const QuizManager: React.FC = () => {
 
                     {q.imageUrl ? (
                       <div className="relative">
-                        <img src={q.imageUrl} alt="" className="h-12 w-20 object-cover rounded-lg border border-slate-700" />
+                        <img
+                          src={formatImageUrl(q.imageUrl)}
+                          alt="Preview da Questão"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                          className="h-14 w-24 object-contain rounded-lg border border-slate-700 bg-slate-950 p-1 shadow-md"
+                        />
                         <button
                           type="button"
                           onClick={() => handleUpdateQuestion(qIdx, 'imageUrl', '')}
-                          className="absolute -top-1.5 -right-1.5 bg-red-600 text-white p-0.5 rounded-full cursor-pointer"
+                          className="absolute -top-1.5 -right-1.5 bg-red-600 hover:bg-red-500 text-white p-0.5 rounded-full cursor-pointer shadow-md transition-colors"
+                          title="Remover imagem"
                         >
                           <X className="w-3 h-3" />
                         </button>
                       </div>
                     ) : (
-                      <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700">
+                      <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors">
                         <span>Anexar Imagem</span>
-                        <input type="file" accept="image/*" onChange={(e) => handleImageUpload(qIdx, e)} className="hidden" />
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleImageUpload(qIdx, e)}
+                          className="hidden"
+                        />
                       </label>
                     )}
                   </div>
@@ -757,7 +876,7 @@ export const QuizManager: React.FC = () => {
                             placeholder="Alternativa Vermelha"
                             value={q.options[0]?.text || ''}
                             onChange={(e) => handleUpdateOptionText(qIdx, 0, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none"
+                            className="w-full bg-transparent text-xs text-white focus:outline-none font-bold"
                           />
                           <input
                             type="radio"
@@ -775,7 +894,7 @@ export const QuizManager: React.FC = () => {
                             placeholder="Alternativa Azul"
                             value={q.options[1]?.text || ''}
                             onChange={(e) => handleUpdateOptionText(qIdx, 1, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none"
+                            className="w-full bg-transparent text-xs text-white focus:outline-none font-bold"
                           />
                           <input
                             type="radio"
@@ -793,7 +912,7 @@ export const QuizManager: React.FC = () => {
                             placeholder="Alternativa Amarela"
                             value={q.options[2]?.text || ''}
                             onChange={(e) => handleUpdateOptionText(qIdx, 2, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none"
+                            className="w-full bg-transparent text-xs text-white focus:outline-none font-bold"
                           />
                           <input
                             type="radio"
@@ -811,7 +930,7 @@ export const QuizManager: React.FC = () => {
                             placeholder="Alternativa Verde"
                             value={q.options[3]?.text || ''}
                             onChange={(e) => handleUpdateOptionText(qIdx, 3, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none"
+                            className="w-full bg-transparent text-xs text-white focus:outline-none font-bold"
                           />
                           <input
                             type="radio"
@@ -908,49 +1027,49 @@ export const QuizManager: React.FC = () => {
                     <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-2xl space-y-3">
                       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                         <div>
-                          <label className="text-[10px] font-bold text-slate-400">Mínimo</label>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase">Mínimo</label>
                           <input
                             type="number"
                             value={q.sliderConfig.min}
                             onChange={(e) => handleUpdateSliderConfig(qIdx, 'min', Number(e.target.value))}
-                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-bold text-slate-400">Máximo</label>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase">Máximo</label>
                           <input
                             type="number"
                             value={q.sliderConfig.max}
                             onChange={(e) => handleUpdateSliderConfig(qIdx, 'max', Number(e.target.value))}
-                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-bold text-slate-400">Unidade</label>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase">Unidade</label>
                           <input
                             type="text"
                             placeholder="bar, ton, °C"
                             value={q.sliderConfig.unit}
                             onChange={(e) => handleUpdateSliderConfig(qIdx, 'unit', e.target.value)}
-                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs uppercase"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-bold text-amber-400">Alvo *</label>
+                          <label className="text-[10px] font-bold text-amber-400 uppercase">Alvo *</label>
                           <input
                             type="number"
                             value={q.sliderConfig.target}
                             onChange={(e) => handleUpdateSliderConfig(qIdx, 'target', Number(e.target.value))}
-                            className="w-full mt-1 bg-slate-950 border border-amber-500/70 p-2 rounded-xl text-white text-xs font-bold"
+                            className="w-full mt-1 bg-slate-950 border border-amber-500/70 p-2 rounded-xl text-white text-xs font-mono font-bold"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-bold text-slate-400">Tolerância (±)</label>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase">Tolerância (±)</label>
                           <input
                             type="number"
                             value={q.sliderConfig.tolerance}
                             onChange={(e) => handleUpdateSliderConfig(qIdx, 'tolerance', Number(e.target.value))}
-                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                            className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                           />
                         </div>
                       </div>
@@ -1035,7 +1154,6 @@ export const QuizManager: React.FC = () => {
                       </span>
 
                       <div className="flex items-center gap-1">
-                        {/* ⚡ BOTÃO DE PUBLICAR NO REPOSITÓRIO GLOBAL */}
                         <button
                           type="button"
                           onClick={() => handleOpenPublishModal(q)}
@@ -1045,6 +1163,18 @@ export const QuizManager: React.FC = () => {
                           title={q.isPublic ? 'Remover do Repositório Global' : 'Publicar no Repositório Global'}
                         >
                           <Globe className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenPrintPreview(q);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-blue-400 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                          title="Imprimir Avaliação / Salvar em PDF"
+                        >
+                          <Printer className="w-4 h-4" />
                         </button>
 
                         <button
@@ -1085,7 +1215,7 @@ export const QuizManager: React.FC = () => {
         </div>
       )}
 
-      {/* ⚡ MODAL DE CONFIGURAÇÃO DE PUBLICAÇÃO GLOBAL */}
+      {/* ⚡ MODAL DE PUBLICAÇÃO GLOBAL */}
       {isPublishModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full space-y-5 shadow-2xl relative">
@@ -1151,6 +1281,16 @@ export const QuizManager: React.FC = () => {
         isOpen={isAiModalOpen}
         onClose={() => setIsAiModalOpen(false)}
         onImportData={handleImportFromAi}
+      />
+      <ExamPrintModal
+        isOpen={isPrintModalOpen}
+        onClose={() => setIsPrintModalOpen(false)}
+        exam={printExamData}
+      />
+      <PersonalQuestionBankModal
+        isOpen={isQuestionBankOpen}
+        onClose={() => setIsQuestionBankOpen(false)}
+        onSelectQuestion={handleImportFromPersonalBank}
       />
     </div>
   );

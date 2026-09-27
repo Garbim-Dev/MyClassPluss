@@ -9,8 +9,8 @@ import { SessionHistory } from './SessionHistory';
 import { InstitutionsManager } from './InstitutionsManager';
 import { GlobalCoursesManager } from './GlobalCoursesManager';
 import { SubjectsManager } from './SubjectsManager';
-import { RoomsManager } from './RoomsManager';       // 👈 Gerenciador de Ambientes Físicos (Salas)
-import { ClassesManager } from './ClassesManager';   // 👈 Gerenciador de Turmas
+import { RoomsManager } from './RoomsManager';       // Gerenciador de Ambientes Físicos (Salas)
+import { ClassesManager } from './ClassesManager';   // Gerenciador de Turmas
 import { ClassReportModal } from './ClassReportModal';
 import { TeamConfigModal } from './TeamConfigModal';
 import { InteractiveArenaModal } from './InteractiveArenaModal';
@@ -18,6 +18,8 @@ import { ClassDetailsModal } from './ClassDetailsModal';
 import { FullPedagogicalDossierModal } from './FullPedagogicalDossierModal';
 import { ExamMonitorModal } from './ExamMonitorModal';
 import { ContentManager } from './ContentManager';
+import { BackupManager } from './BackupManager';
+import { ShieldCheck } from 'lucide-react';
 import {
   PlusCircle,
   QrCode,
@@ -48,10 +50,14 @@ import {
   Layers,
   DoorClosed,
   Users,
+  Copy,
+  Check,
+  Smartphone,
+  Globe,
 } from 'lucide-react';
 
 type TabType = 'dashboard' | 'academic' | 'quizzes';
-type AcademicSubTab = 'institutions' | 'courses' | 'subjects' | 'rooms' | 'classes' | 'history';
+type AcademicSubTab = 'institutions' | 'courses' | 'subjects' | 'rooms' | 'classes' | 'history' | 'backup';
 type ActivityFilter = 'ALL' | 'QUIZ_INTERATIVO' | 'AVALIACAO' | 'ATIVIDADE';
 
 interface TeamItem {
@@ -65,7 +71,6 @@ export const TeacherDashboard: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { theme } = useTheme();
 
-  // ⚡ Alterado o padrão para 'academic' para iniciar na Gestão Acadêmica
   const currentTabParam = (searchParams.get('tab') as TabType) || 'academic';
   const [activeTab, setActiveTabState] = useState<TabType>(
     ['dashboard', 'academic', 'quizzes'].includes(currentTabParam) ? currentTabParam : 'academic'
@@ -97,12 +102,17 @@ export const TeacherDashboard: React.FC = () => {
   const [activeClassId, setActiveClassId] = useState<string | null>(null);
   const [activeClassData, setActiveClassData] = useState<any | null>(null);
   const [onlineStudents, setOnlineStudents] = useState<any[]>([]);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('ALL');
   const [filterOnlyCurrentDemand, setFilterOnlyCurrentDemand] = useState(true);
   const [selectedQuiz, setSelectedQuiz] = useState<any | null>(null);
 
+  // ⚡ Estado para armazenar o Dossiê Consolidado vindo da API
+  const [reportData, setReportData] = useState<any | null>(null);
   const [isReportOpen, setIsReportOpen] = useState(false);
+  const [loadingReport, setLoadingReport] = useState(false);
+
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
   const [isTeamModeActive, setIsTeamModeActive] = useState(false);
   const [isArenaOpen, setIsArenaOpen] = useState(false);
@@ -151,7 +161,6 @@ export const TeacherDashboard: React.FC = () => {
   const handleLogout = () => {
     localStorage.removeItem('@MyClassPluss:token');
     localStorage.removeItem('token');
-    localStorage.removeItem('@OffClass:token');
     localStorage.removeItem('user');
     sessionStorage.clear();
     navigate('/', { replace: true });
@@ -230,6 +239,7 @@ export const TeacherDashboard: React.FC = () => {
     };
   }, [activeClassId, teacherName]);
 
+  // Contagem regressiva oficial da pergunta
   useEffect(() => {
     let timer: any;
     if (quizRunning && countdown > 0) {
@@ -258,41 +268,46 @@ export const TeacherDashboard: React.FC = () => {
   }, [quizRunning, countdown, activeClassId, selectedQuiz, currentQuestionIndex]);
 
   const emitLaunchQuestion = (quiz: any, questionIndex: number) => {
-  if (!activeClassId) {
-    alert('Selecione uma turma e gere o QR Code antes de iniciar a atividade!');
-    return;
-  }
+    if (!activeClassId) {
+      alert('Selecione uma turma e gere o QR Code antes de iniciar a atividade!');
+      return;
+    }
 
-  const q = quiz.questions?.[questionIndex] || quiz.questions?.[0];
-  if (!q) return;
+    const q = quiz.questions?.[questionIndex] || quiz.questions?.[0];
+    if (!q) return;
 
-  setShowPodium(false);
-  setQuizFinished(false);
-  setQuizResults(null);
-  setAnswersCount(0);
-  setCountdown(Number(q.timeLimitSeconds) || 30);
-  setQuizRunning(true);
-  setCurrentQuestionIndex(questionIndex);
-  setIsArenaOpen(true);
+    setShowPodium(false);
+    setQuizFinished(false);
+    setQuizResults(null);
+    setAnswersCount(0);
+    setCountdown(Number(q.timeLimitSeconds) || 30);
+    setQuizRunning(true);
+    setCurrentQuestionIndex(questionIndex);
+    setIsArenaOpen(true);
 
-  const socket = getSocket();
-  socket.emit('launch_question', {
-    classId: activeClassId,
-    quizId: quiz.id,
-    quizType: 'QUIZ_INTERATIVO',
-    quizTitle: quiz.title,
-    questionId: q.id,
-    questionIndex,
-    totalQuestions: quiz.questions.length,
-    title: q.title,
-    imageUrl: q.imageUrl || q.image || null, // 👈 Garante que pega a URL da imagem da questão
-    type: q.type,
-    timeLimitSeconds: Number(q.timeLimitSeconds) || 30,
-    durationMinutes: Number(quiz.durationMinutes) || 45,
-    options: q.options || [],
-    sliderConfig: q.sliderConfig || null,
-  });
-};
+    const socket = getSocket();
+    socket.emit('launch_question', {
+      classId: activeClassId,
+      quizId: quiz.id,
+      quizType: 'QUIZ_INTERATIVO',
+      quizTitle: quiz.title,
+      questionId: q.id,
+      questionIndex,
+      totalQuestions: quiz.questions.length,
+      title: q.title,
+      imageUrl: q.imageUrl || q.image || null,
+      type: q.type,
+      timeLimitSeconds: Number(q.timeLimitSeconds) || 30,
+      durationMinutes: Number(quiz.durationMinutes) || 45,
+      options: q.options || [],
+      sliderConfig: q.sliderConfig || null,
+    });
+  };
+
+  const handleStartGameAfterWarmup = () => {
+    if (!selectedQuiz) return;
+    emitLaunchQuestion(selectedQuiz, 0);
+  };
 
   const handleLaunchActivity = (quizToLaunch?: any) => {
     const target = quizToLaunch || selectedQuiz;
@@ -307,24 +322,22 @@ export const TeacherDashboard: React.FC = () => {
 
     setSelectedQuiz(target);
 
-    if (target.type === 'AVALIACAO') {
+    // ⚡ Normaliza para detectar AVALIACAO ou AVALIAÇAO
+    const normalizedType = normalizeType(target.type);
+
+    if (normalizedType === 'AVALIACAO') {
+      // ⚡ MODALIDADE AVALIAÇÃO FORMAL: Abre o monitor e NÃO abre a arena gamificada
       setIsArenaOpen(false);
       setIsExamMonitorOpen(true);
 
       const socket = getSocket();
-      socket.emit('launch_question', {
+      socket.emit('launch_formal_exam', {
         classId: activeClassId,
         quizId: target.id,
-        quizType: 'AVALIACAO',
+        quizType: 'AVALIAÇAO',
         quizTitle: target.title,
-        questionId: target.questions[0]?.id || 'q1',
-        questionIndex: 0,
-        totalQuestions: target.questions.length,
-        title: target.title,
-        type: 'AVALIACAO',
-        timeLimitSeconds: (Number(target.durationMinutes) || 45) * 60,
         durationMinutes: Number(target.durationMinutes) || 45,
-        options: [],
+        totalQuestions: target.questions.length,
         questions: target.questions.map((item: any, idx: number) => ({
           id: item.id || `q_${idx}`,
           title: item.title,
@@ -338,12 +351,18 @@ export const TeacherDashboard: React.FC = () => {
       return;
     }
 
+    // ⚡ MODALIDADE QUIZ GAMIFICADO (Arena de Telão)
     setShowPodium(false);
     setQuizFinished(false);
     setQuizResults(null);
     setAnswersCount(0);
     setCurrentQuestionIndex(0);
-    emitLaunchQuestion(target, 0);
+
+    const firstQ = target.questions[0];
+    const initialSeconds = Number(firstQ?.timeLimitSeconds) || 30;
+    setCountdown(initialSeconds);
+    setQuizRunning(false);
+    setIsArenaOpen(true);
   };
 
   const handleNextQuestion = () => {
@@ -366,17 +385,26 @@ export const TeacherDashboard: React.FC = () => {
   };
 
   const handleSelectDemand = async (cls: any) => {
+    setOnlineStudents([]);
+    setQuizResults(null);
+    setShowPodium(false);
+    setAnswersCount(0);
+    setCurrentQuestionIndex(0);
+    setQuizRunning(false);
+
     setActiveClassData(cls);
     setActiveClassId(cls.id);
+
     await handleGenerateQr(cls.id);
   };
 
   const handleGenerateQr = async (classId: string) => {
     try {
       const currentHost = window.location.hostname;
-      const res = await api.get('/academic/classes/' + classId + '/qrcode', {
+      const res = await api.get(`/academic/classes/${classId}/qrcode`, {
         params: { serverIp: currentHost },
       });
+      
       setSelectedQr(res.data);
       setActiveClassId(classId);
       setOnlineStudents([]);
@@ -393,6 +421,12 @@ export const TeacherDashboard: React.FC = () => {
     }
   };
 
+  const handleCopyCode = (code: string) => {
+    navigator.clipboard.writeText(code);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
   const handleResetScores = () => {
     if (!activeClassId) return;
     if (confirm('Deseja zerar as notas de todos os alunos nesta sala?')) {
@@ -402,6 +436,60 @@ export const TeacherDashboard: React.FC = () => {
       setQuizFinished(false);
       setQuizResults(null);
       setCurrentQuestionIndex(0);
+    }
+  };
+
+  // ⚡ Busca o Dossiê Consolidado de Desempenho e Frequência do Backend
+  const handleOpenClassReport = async (customClassId?: string, customSubjectId?: string) => {
+    const classIdToUse = customClassId || activeClassId;
+    if (!classIdToUse) {
+      alert('Selecione uma turma para visualizar o Dossiê de Desempenho.');
+      return;
+    }
+
+    setLoadingReport(true);
+    try {
+      const subjectIdToUse = customSubjectId || activeClassData?.modules?.[0]?.subjectId;
+      const res = await api.get(`/academic/classes/${classIdToUse}/performance`, {
+        params: subjectIdToUse ? { subjectId: subjectIdToUse } : undefined,
+      });
+
+      setReportData(res.data);
+      setIsReportOpen(true);
+    } catch (err: any) {
+      console.error('Erro ao buscar desempenho da turma:', err);
+      const fallbackStudents = (activeClassData?.enrollments || []).map((e: any, idx: number) => ({
+        rank: idx + 1,
+        userId: e.user?.id || e.id,
+        userName: e.user?.name || e.user?.email || `Aluno ${idx + 1}`,
+        totalGrade: 0.0,
+        isApproved: false,
+        attendancePercentage: 100,
+      }));
+
+      setReportData({
+        classInfo: {
+          code: activeClassData?.code || 'Turma',
+          courseName: activeClassData?.course?.name || 'Treinamento Técnico',
+          subjectName: activeClassData?.modules?.[0]?.subject?.name || 'Geral',
+        },
+        activityCounts: {
+          totalActivities: 0,
+          quizzesCount: 0,
+          examsCount: 0,
+          practicesCount: 0,
+        },
+        summary: {
+          enrolledCount: fallbackStudents.length,
+          classAverage: 0.0,
+          approvedCount: 0,
+          failedCount: fallbackStudents.length,
+        },
+        students: fallbackStudents,
+      });
+      setIsReportOpen(true);
+    } finally {
+      setLoadingReport(false);
     }
   };
 
@@ -433,17 +521,29 @@ export const TeacherDashboard: React.FC = () => {
     setIsDossierModalOpen(true);
   };
 
+  // ⚡ Normalizador universal de tipo para aceitar AVALIACAO e AVALIAÇAO
+  const normalizeType = (t?: string) => {
+    if (!t) return 'QUIZ_INTERATIVO';
+    const n = t.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    if (n.includes('AVALIA')) return 'AVALIACAO';
+    if (n.includes('PRAT') || n.includes('ATIVIDADE')) return 'ATIVIDADE';
+    return 'QUIZ_INTERATIVO';
+  };
+
+  // ⚡ Declaradas uma única vez (sem duplicações)
   const activeSubjectIds = activeClassData?.modules?.map((m: any) => m.subjectId) || [];
-  const activeSubjectNames = activeClassData?.modules?.map((m: any) => m.subject?.name?.toLowerCase()) || [];
+  const activeSubjectNames = activeClassData?.modules?.map((m: any) => m.subject?.name?.toLowerCase().trim()) || [];
 
   const filteredQuizzes = quizzesList.filter((q) => {
-    if (activityFilter !== 'ALL' && q.type !== activityFilter) {
+    if (activityFilter !== 'ALL' && normalizeType(q.type) !== normalizeType(activityFilter)) {
       return false;
     }
 
     if (filterOnlyCurrentDemand && activeClassData) {
       const matchById = q.subjectId && activeSubjectIds.includes(q.subjectId);
-      const matchByName = q.subject?.name && activeSubjectNames.includes(q.subject.name.toLowerCase());
+      const matchByName =
+        q.subject?.name &&
+        activeSubjectNames.some((name: string) => name === q.subject.name.toLowerCase().trim());
       return matchById || matchByName;
     }
 
@@ -479,7 +579,8 @@ export const TeacherDashboard: React.FC = () => {
       : 'bg-slate-950 text-slate-100';
 
   const getTypeBadge = (type: string) => {
-    switch (type) {
+    const normalized = normalizeType(type);
+    switch (normalized) {
       case 'AVALIACAO':
         return {
           label: 'Avaliação Formal',
@@ -505,6 +606,10 @@ export const TeacherDashboard: React.FC = () => {
   const top1 = dashboardLeaderboard[0];
   const top2 = dashboardLeaderboard[1];
   const top3 = dashboardLeaderboard[2];
+
+  // Identifica o IP/Host para instrução aos alunos
+  const currentHost = window.location.hostname;
+  const accessUrl = `http://${currentHost}:5173/student/join`;
 
   return (
     <div className={`relative min-h-screen ${bgRootClass} overflow-hidden font-sans transition-colors duration-300`}>
@@ -542,7 +647,6 @@ export const TeacherDashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            {/* ⚡ MENU SUPERIOR REORGANIZADO NA ORDEM LÓGICA */}
             <div className="flex items-center bg-slate-900/90 border border-slate-800 p-1.5 rounded-2xl gap-2 shadow-lg flex-wrap">
               <button
                 onClick={() => handleTabChange('academic')}
@@ -680,6 +784,18 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
+                onClick={() => setAcademicSubTab('backup')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  academicSubTab === 'backup'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>Backup & Dados</span>
+              </button>
+
+              <button
                 onClick={() => setAcademicSubTab('history')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'history'
@@ -692,12 +808,15 @@ export const TeacherDashboard: React.FC = () => {
               </button>
             </div>
 
-            {academicSubTab === 'institutions' && <InstitutionsManager />}
-            {academicSubTab === 'courses' && <GlobalCoursesManager />}
-            {academicSubTab === 'subjects' && <SubjectsManager />}
-            {academicSubTab === 'rooms' && <RoomsManager />}
-            {academicSubTab === 'classes' && <ClassesManager />}
-            {academicSubTab === 'history' && <SessionHistory />}
+            <div className="mt-6">      
+              {academicSubTab === 'institutions' && <InstitutionsManager />}
+              {academicSubTab === 'courses' && <GlobalCoursesManager />}
+              {academicSubTab === 'subjects' && <SubjectsManager />}
+              {academicSubTab === 'rooms' && <RoomsManager />}
+              {academicSubTab === 'classes' && <ClassesManager />}
+              {academicSubTab === 'backup' && <BackupManager />}
+              {academicSubTab === 'history' && <SessionHistory />}
+            </div>
           </div>
         )}
 
@@ -752,9 +871,21 @@ export const TeacherDashboard: React.FC = () => {
                     <div className="bg-slate-950/80 border border-blue-500/30 p-5 rounded-2xl space-y-4">
                       <div className="flex justify-between items-center">
                         <span className="text-xs font-black uppercase text-blue-400 tracking-wider">Resumo da Turma Selecionada</span>
-                        <span className="text-xs font-bold bg-emerald-500/20 text-emerald-300 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-                          Pronta para Transmissão
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenClassReport(activeClassData.id)}
+                            disabled={loadingReport}
+                            className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-black px-3 py-1.5 rounded-xl cursor-pointer transition-all flex items-center gap-1.5 uppercase"
+                            title="Visualizar Dossiê Pedagógico desta turma"
+                          >
+                            <FileSpreadsheet className="w-3.5 h-3.5" />
+                            <span>{loadingReport ? 'Carregando Dossiê...' : 'Ver Dossiê da Turma'}</span>
+                          </button>
+                          <span className="text-xs font-bold bg-emerald-500/20 text-emerald-300 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                            Pronta
+                          </span>
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
@@ -778,7 +909,6 @@ export const TeacherDashboard: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* ⚡ BOTÃO EXPLÍCITO PARA GERAR / PROJETAR O QR CODE DA TURMA */}
                       <button
                         type="button"
                         onClick={() => handleGenerateQr(activeClassData.id)}
@@ -792,66 +922,101 @@ export const TeacherDashboard: React.FC = () => {
                 </div>
               </div>
 
-              {/* QR CODE DE ACESSO */}
-              <div className="bg-slate-900/60 border border-slate-800/90 p-6 rounded-3xl flex flex-col items-center justify-center text-center shadow-xl backdrop-blur-md">
-                <h2 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-                  <QrCode className="text-blue-400 w-5 h-5" />
-                  <span>QR Code de Acesso</span>
-                </h2>
+              {/* ========================================================================= */}
+              {/* ⚡ CARD DO QR CODE DE ACESSO COM CÓDIGO DA TURMA EM DESTAQUE GIGANTE */}
+              {/* ========================================================================= */}
+              <div className="bg-slate-900/60 border border-slate-800/90 p-6 rounded-3xl flex flex-col items-center justify-between text-center shadow-xl backdrop-blur-md">
+                <div className="w-full">
+                  <div className="flex items-center justify-center gap-2 mb-3">
+                    <QrCode className="text-blue-400 w-5 h-5" />
+                    <h2 className="text-base font-bold text-white">Acesso dos Estudantes</h2>
+                  </div>
 
-                {selectedQr ? (
-                  <div className="space-y-4 w-full flex flex-col items-center">
-                    <div className="bg-white p-3 rounded-2xl inline-block shadow-2xl">
-                      <img src={selectedQr.qrCodeImage} alt="QR Code da Turma" className="w-40 h-40 object-contain" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-white">{selectedQr.classCode}</p>
-                      <p className="text-xs text-slate-400">{selectedQr.courseName}</p>
-                    </div>
+                  {selectedQr ? (
+                    <div className="space-y-4 w-full flex flex-col items-center">
+                      {/* 1. Código da Turma em formato "PIN" de Alto Contraste */}
+                      <div className="w-full bg-gradient-to-r from-blue-950/60 via-slate-900 to-indigo-950/60 border-2 border-blue-500/50 p-3.5 rounded-2xl shadow-lg relative group">
+                        <span className="text-[10px] font-black uppercase text-blue-400 tracking-wider block mb-1">
+                          Código / PIN de Entrada Manual
+                        </span>
+                        
+                        <div className="flex items-center justify-center gap-2">
+                          <span className="text-2xl sm:text-3xl font-black text-white font-mono tracking-wider drop-shadow-[0_2px_10px_rgba(59,130,246,0.5)]">
+                            {selectedQr.classCode}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCode(selectedQr.classCode)}
+                            className="p-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors cursor-pointer"
+                            title="Copiar código da turma"
+                          >
+                            {copiedCode ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                          </button>
+                        </div>
 
-                    <div className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-3 text-left space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
-                          <Signal className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                          <span>Alunos Conectados</span>
-                        </span>
-                        <span className="text-xs font-black px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full">
-                          {onlineStudents.length}
-                        </span>
+                        <p className="text-[11px] text-slate-400 mt-1 flex items-center justify-center gap-1">
+                          <Globe className="w-3 h-3 text-indigo-400" />
+                          <span>Acesse pelo navegador: <strong className="text-slate-200">{accessUrl}</strong></span>
+                        </p>
                       </div>
 
-                      <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
-                        {onlineStudents.length === 0 ? (
-                          <p className="text-[11px] text-slate-500 italic">Aguardando leitura do QR Code...</p>
-                        ) : (
-                          onlineStudents.map((s, idx) => (
-                            <div
-                              key={idx}
-                              className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/90 px-2 py-1 rounded-lg border border-slate-800"
-                            >
-                              <div className="flex items-center gap-2 truncate">
-                                <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                                <span className="truncate">{s.userName}</span>
+                      {/* 2. QR Code Nítido */}
+                      <div className="bg-white p-3 rounded-2xl inline-block shadow-2xl transition-transform hover:scale-105 duration-300">
+                        <img src={selectedQr.qrCodeImage} alt="QR Code da Turma" className="w-36 h-36 object-contain" />
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                        <Smartphone className="w-3.5 h-3.5 text-blue-400" />
+                        <span>Aponte a câmera do celular para entrar</span>
+                      </div>
+
+                      {/* 3. Indicador de Alunos Conectados ao Vivo */}
+                      <div className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl p-3 text-left space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                            <Signal className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                            <span>Alunos na Sala</span>
+                          </span>
+                          <span className="text-xs font-black px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-mono">
+                            {onlineStudents.length} conectados
+                          </span>
+                        </div>
+
+                        <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
+                          {onlineStudents.length === 0 ? (
+                            <p className="text-[11px] text-slate-500 italic text-center py-1">
+                              Aguardando entrada dos alunos...
+                            </p>
+                          ) : (
+                            onlineStudents.map((s, idx) => (
+                              <div
+                                key={idx}
+                                className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/90 px-2 py-1 rounded-lg border border-slate-800"
+                              >
+                                <div className="flex items-center gap-2 truncate">
+                                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                                  <span className="truncate">{s.userName}</span>
+                                </div>
+                                {s.teamName && (
+                                  <span
+                                    className="text-[9px] font-black px-1.5 py-0.5 rounded text-white"
+                                    style={{ backgroundColor: s.teamColor || '#6366f1' }}
+                                  >
+                                    {s.teamName}
+                                  </span>
+                                )}
                               </div>
-                              {s.teamName && (
-                                <span
-                                  className="text-[9px] font-black px-1.5 py-0.5 rounded text-white"
-                                  style={{ backgroundColor: s.teamColor || '#6366f1' }}
-                                >
-                                  {s.teamName}
-                                </span>
-                              )}
-                            </div>
-                          ))
-                        )}
+                            ))
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="py-16 text-slate-500 text-sm">
-                    Selecione uma turma acima para gerar o QR Code de acesso.
-                  </div>
-                )}
+                  ) : (
+                    <div className="py-16 text-slate-500 text-sm">
+                      Selecione uma turma acima para gerar o QR Code e o código de acesso.
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1053,11 +1218,11 @@ export const TeacherDashboard: React.FC = () => {
                         </button>
                       ) : (
                         <button
-                          onClick={() => handleOpenDossier()}
+                          onClick={() => handleOpenClassReport(activeClassId || undefined)}
                           className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-lg cursor-pointer"
                         >
                           <FileSpreadsheet className="w-4 h-4" />
-                          <span>Relatório Final</span>
+                          <span>Dossiê Oficial da Turma</span>
                         </button>
                       )}
 
@@ -1108,13 +1273,23 @@ export const TeacherDashboard: React.FC = () => {
           </div>
         )}
 
-        {/* MODAIS */}
+        {/* MODAL DO DOSSIÊ OFICIAL */}
         <ClassReportModal
           isOpen={isReportOpen}
           onClose={() => setIsReportOpen(false)}
-          classNameStr={activeClassData?.code || ''}
-          courseNameStr={activeClassData?.course?.name || ''}
-          students={quizResults?.leaderboard || []}
+          classId={activeClassData?.id || activeClassId || ''}
+          classNameStr={reportData?.classInfo?.code || activeClassData?.code || 'Turma'}
+          courseNameStr={reportData?.classInfo?.courseName || activeClassData?.course?.name || 'Treinamento'}
+          subjectNameStr={reportData?.classInfo?.subjectName || activeClassData?.modules?.[0]?.subject?.name || 'Conhecimentos Gerais'}
+          totalQuizzes={reportData?.activityCounts?.quizzesCount ?? 0}
+          totalExams={reportData?.activityCounts?.examsCount ?? 0}
+          totalPractices={reportData?.activityCounts?.practicesCount ?? 0}
+          students={reportData?.students || []}
+          onRefresh={() => {
+            if (activeClassData?.id) {
+              handleOpenClassReport(activeClassData.id);
+            }
+          }}
         />
 
         <TeamConfigModal
@@ -1138,7 +1313,12 @@ export const TeacherDashboard: React.FC = () => {
 
         <InteractiveArenaModal
           isOpen={isArenaOpen}
-          onClose={() => setIsArenaOpen(false)}
+          onClose={() => {
+            setIsArenaOpen(false);
+            setQuizRunning(false);
+          }}
+          quizTitle={selectedQuiz?.title || 'Quiz Interativo'}
+          onStartGame={handleStartGameAfterWarmup}
           quizQuestion={selectedQuiz?.questions?.[currentQuestionIndex]?.title || ''}
           quizImage={selectedQuiz?.questions?.[currentQuestionIndex]?.imageUrl || ''}
           questionType={selectedQuiz?.questions?.[currentQuestionIndex]?.type || 'MULTIPLE_CHOICE'}
@@ -1155,7 +1335,7 @@ export const TeacherDashboard: React.FC = () => {
           onNextQuestion={handleNextQuestion}
           onResetScores={handleResetScores}
           onForceFinishTime={handleForceFinish}
-          onOpenFinalReport={() => handleOpenDossier()}
+          onOpenFinalReport={() => handleOpenClassReport(activeClassId || undefined)}
           optRed={selectedQuiz?.questions?.[currentQuestionIndex]?.options?.[0]?.text || ''}
           optBlue={selectedQuiz?.questions?.[currentQuestionIndex]?.options?.[1]?.text || ''}
           optYellow={selectedQuiz?.questions?.[currentQuestionIndex]?.options?.[2]?.text || ''}
@@ -1177,7 +1357,7 @@ export const TeacherDashboard: React.FC = () => {
           totalQuestions={selectedQuiz?.questions?.length || 0}
           classId={activeClassId || ''}
           onlineStudents={onlineStudents}
-          onOpenFinalReport={() => handleOpenDossier()}
+          onOpenFinalReport={() => handleOpenClassReport(activeClassId || undefined)}
         />
 
         <ClassDetailsModal

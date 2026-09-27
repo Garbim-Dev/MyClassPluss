@@ -23,8 +23,8 @@ export const TeacherLogin: React.FC = () => {
 
       const res = await api.post(endpoint, payload);
 
-      localStorage.setItem('@OffClass:token', res.data.token);
-      localStorage.setItem('@OffClass:user', JSON.stringify(res.data.user));
+      localStorage.setItem('@MyClassPluss:token', res.data.token);
+      localStorage.setItem('@MyClassPluss:user', JSON.stringify(res.data.user));
 
       navigate('/dashboard');
     } catch (err: any) {
@@ -39,13 +39,13 @@ export const TeacherLogin: React.FC = () => {
     <div className="flex min-h-screen items-center justify-center p-4 bg-slate-950 text-white font-sans">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl space-y-6">
         <div className="flex items-center gap-3">
-          <img src="/icone.png" alt="OffClass" className="w-12 h-12 rounded-xl bg-slate-950 p-1 border border-slate-800" />
+          <img src="/icone.png" alt="MyClassPluss" className="w-12 h-12 rounded-xl bg-slate-950 p-1 border border-slate-800" />
           <div>
             <h1 className="text-xl font-bold">
               {isRegister ? <span>Criar Conta de Instrutor</span> : <span>Acesso do Instrutor</span>}
             </h1>
             <p className="text-xs text-slate-400">
-              <span>OffClass • Gestao de Turmas</span>
+              <span>MyClassPluss • Gestao de Turmas</span>
             </p>
           </div>
         </div>

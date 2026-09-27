@@ -12,7 +12,7 @@ interface AiImportModalProps {
   }) => void;
 }
 
-const DEFAULT_PROMPT_TEMPLATE = `Atue como um especialista pedagógico em treinamento técnico e elabore um questionário em formato JSON estritamente compatível com o sistema OffClass.
+const DEFAULT_PROMPT_TEMPLATE = `Atue como um especialista pedagógico em treinamento técnico e elabore um questionário em formato JSON estritamente compatível com o sistema MyClassPluss.
 
 Tema desejado: [DIGITE AQUI O SEU TEMA, EX: PROCEDIMENTOS DE OPERAÇÃO SEGURA E MANUTENÇÃO PREVENTIVA]
 Quantidade de questões: 5

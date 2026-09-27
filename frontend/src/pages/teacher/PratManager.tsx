@@ -64,18 +64,36 @@ export const PratManager: React.FC = () => {
   const [isTeamMode, setIsTeamMode] = useState(false);
   const [durationMinutes, setDurationMinutes] = useState<number>(60);
 
+  // ⚡ Normalizador Dinâmico de Imagens para suportar variações de IP e portas
+  const formatImageUrl = (url?: string | null): string => {
+    if (!url) return '';
+    let target = url.trim();
+
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      try {
+        const parsed = new URL(target);
+        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
+      } catch (e) {
+        return encodeURI(target);
+      }
+    }
+
+    const slash = target.startsWith('/') ? '' : '/';
+    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
+  };
+
   const createInitialStep = (id: string, stepNumber = 1): PracticalStepDraft => ({
     id,
-    title: `Etapa ${stepNumber}: Inspeção Visual e Teste Pré-Operacional`,
+    title: `ETAPA ${stepNumber}: INSPEÇÃO VISUAL E TESTE PRÉ-OPERACIONAL`,
     imageUrl: '',
     type: 'CHECKLIST',
     rubric: 'CONFORME_NAO_CONFORME',
     isCritical: stepNumber === 1,
     weight: 2.5,
-    technicalStandard: 'Conforme Norma Regulamentadora e Procedimento Operacional Padrão (POP).',
+    technicalStandard: 'CONFORME NORMA REGULAMENTADORA E PROCEDIMENTO OPERACIONAL PADRÃO (POP).',
     options: [
-      { text: 'Conforme (Aprovado)', color: 'emerald', isCorrect: true, correctOrder: 0 },
-      { text: 'Não Conforme (Item Crítico)', color: 'red', isCorrect: false, correctOrder: 1 },
+      { text: 'CONFORME (APROVADO)', color: 'emerald', isCorrect: true, correctOrder: 0 },
+      { text: 'NÃO CONFORME (ITEM CRÍTICO)', color: 'red', isCorrect: false, correctOrder: 1 },
     ],
     sliderConfig: { min: 0, max: 250, target: 120, tolerance: 0, unit: 'bar' },
   });
@@ -128,7 +146,7 @@ export const PratManager: React.FC = () => {
       const currentOpts = updated[index].options || [];
       while (currentOpts.length < 4) {
         currentOpts.push({
-          text: `Sub-ação ${currentOpts.length + 1}`,
+          text: `SUB-AÇÃO ${currentOpts.length + 1}`,
           color: 'purple',
           isCorrect: true,
           correctOrder: currentOpts.length,
@@ -142,7 +160,6 @@ export const PratManager: React.FC = () => {
 
   const handleUpdateOptionText = (sIndex: number, optIndex: number, text: string) => {
     const updated = [...steps];
-    // Garante que o array existe e possui o tamanho necessário antes de atualizar
     while (updated[sIndex].options.length <= optIndex) {
       updated[sIndex].options.push({
         text: '',
@@ -161,44 +178,29 @@ export const PratManager: React.FC = () => {
     setSteps(updated);
   };
 
-  const handleImageUpload = (sIndex: number, e: React.ChangeEvent<HTMLInputElement>) => {
+  // ⚡ Upload físico padronizado direto para a pasta do backend
+  const handleImageUpload = async (sIndex: number, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1920;
-        const MAX_HEIGHT = 1080;
-        let width = img.width;
-        let height = img.height;
+    const formData = new FormData();
+    formData.append('file', file);
 
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
+    try {
+      const res = await api.post('/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
 
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.88);
-          handleUpdateStep(sIndex, 'imageUrl', compressedDataUrl);
-        }
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+      if (res.data) {
+        const savedUrl = res.data.url || res.data.fileUrl || `/uploads/${res.data.filename}`;
+        handleUpdateStep(sIndex, 'imageUrl', savedUrl);
+      }
+    } catch (err: any) {
+      console.error('Erro ao enviar imagem prática para o servidor:', err);
+      alert(err.response?.data?.message || 'Erro ao realizar upload da imagem.');
+    }
   };
 
   const handleImportFromAi = (data: any) => {
@@ -223,7 +225,7 @@ export const PratManager: React.FC = () => {
         if (q.type === 'PUZZLE') {
           while (stepOptions.length < 4) {
             stepOptions.push({
-              text: `Sub-ação ${stepOptions.length + 1}`,
+              text: `SUB-AÇÃO ${stepOptions.length + 1}`,
               color: 'purple',
               isCorrect: true,
               correctOrder: stepOptions.length,
@@ -232,20 +234,20 @@ export const PratManager: React.FC = () => {
           stepOptions = stepOptions.slice(0, 4);
         } else {
           stepOptions = [
-            { text: 'Conforme', color: 'emerald', isCorrect: true, correctOrder: 0 },
-            { text: 'Não Conforme', color: 'red', isCorrect: false, correctOrder: 1 },
+            { text: 'CONFORME', color: 'emerald', isCorrect: true, correctOrder: 0 },
+            { text: 'NÃO CONFORME', color: 'red', isCorrect: false, correctOrder: 1 },
           ];
         }
 
         return {
           id: (Date.now() + qIdx).toString(),
-          title: q.title || `Etapa ${qIdx + 1}`,
+          title: q.title || `ETAPA ${qIdx + 1}`,
           imageUrl: q.imageUrl || '',
           type: q.type === 'SLIDER' ? 'SLIDER' : q.type === 'PUZZLE' ? 'PUZZLE' : 'CHECKLIST',
           rubric: 'CONFORME_NAO_CONFORME',
           isCritical: qIdx === 0,
           weight: q.weight !== undefined ? Number(q.weight) : 2.5,
-          technicalStandard: q.justification || 'Critério técnico de segurança e operação.',
+          technicalStandard: q.justification || 'CRITÉRIO TÉCNICO DE SEGURANÇA E OPERAÇÃO.',
           options: stepOptions,
           sliderConfig: sliderParsed,
         };
@@ -275,7 +277,7 @@ export const PratManager: React.FC = () => {
         if (q.type === 'PUZZLE') {
           while (stepOpts.length < 4) {
             stepOpts.push({
-              text: `Sub-ação ${stepOpts.length + 1}`,
+              text: `SUB-AÇÃO ${stepOpts.length + 1}`,
               color: 'purple',
               isCorrect: true,
               correctOrder: stepOpts.length,
@@ -284,8 +286,8 @@ export const PratManager: React.FC = () => {
           stepOpts = stepOpts.slice(0, 4);
         } else {
           stepOpts = [
-            { text: 'Conforme', color: 'emerald', isCorrect: true, correctOrder: 0 },
-            { text: 'Não Conforme', color: 'red', isCorrect: false, correctOrder: 1 },
+            { text: 'CONFORME', color: 'emerald', isCorrect: true, correctOrder: 0 },
+            { text: 'NÃO CONFORME', color: 'red', isCorrect: false, correctOrder: 1 },
           ];
         }
 
@@ -345,7 +347,7 @@ export const PratManager: React.FC = () => {
       const payload = {
         title: title.trim(),
         description: description.trim(),
-        type: 'ATIVIDADE', // ⚡ Gravado explicitamente como ATIVIDADE
+        type: 'ATIVIDADE',
         durationMinutes: Number(durationMinutes) || 60,
         subjectId: selectedSubjectId,
         questions: steps.map((s, idx) => {
@@ -353,12 +355,12 @@ export const PratManager: React.FC = () => {
 
           if (s.type === 'CHECKLIST') {
             formattedOptions = [
-              { text: 'Conforme (Aprovado)', color: 'emerald', isCorrect: true, correctOrder: 0 },
-              { text: 'Não Conforme (Inadequado)', color: 'red', isCorrect: false, correctOrder: 1 },
+              { text: 'CONFORME (APROVADO)', color: 'emerald', isCorrect: true, correctOrder: 0 },
+              { text: 'NÃO CONFORME (INADEQUADO)', color: 'red', isCorrect: false, correctOrder: 1 },
             ];
           } else if (s.type === 'PUZZLE') {
             formattedOptions = s.options.map((opt, oIdx) => ({
-              text: opt.text || `Passo ${oIdx + 1}`,
+              text: opt.text || `PASSO ${oIdx + 1}`,
               color: 'purple',
               isCorrect: true,
               correctOrder: oIdx,
@@ -489,7 +491,7 @@ export const PratManager: React.FC = () => {
                 placeholder="Ex: Inspeção 360° e Teste Pré-Operacional de Caminhão Fora de Estrada"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full mt-1 bg-slate-950 border border-slate-800 focus:border-amber-500 p-2.5 rounded-xl text-white text-sm font-semibold focus:outline-none"
+                className="w-full mt-1 bg-slate-950 border border-slate-800 focus:border-amber-500 p-2.5 rounded-xl text-white text-sm font-semibold focus:outline-none uppercase"
               />
             </div>
 
@@ -541,7 +543,7 @@ export const PratManager: React.FC = () => {
             <div className="flex items-center gap-3">
               <Shield className="w-6 h-6 text-amber-400 shrink-0" />
               <div>
-                <span className="text-xs font-black text-white block">Matriz de Habilidades e Conformidade</span>
+                <span className="text-xs font-black text-white block uppercase tracking-wider">Matriz de Habilidades e Conformidade</span>
                 <span className="text-[11px] text-slate-400">
                   Pontuação ponderada e itens críticos eliminatórios para segurança e operacionalidade.
                 </span>
@@ -608,7 +610,7 @@ export const PratManager: React.FC = () => {
                         onChange={(e) => handleUpdateStep(sIdx, 'isCritical', e.target.checked)}
                         className="w-3.5 h-3.5 accent-red-500 rounded cursor-pointer"
                       />
-                      <span className="text-[10px] font-black text-red-300 flex items-center gap-1">
+                      <span className="text-[10px] font-black text-red-300 flex items-center gap-1 uppercase">
                         <AlertTriangle className="w-3 h-3 text-red-400" />
                         <span>Item Crítico</span>
                       </span>
@@ -624,9 +626,9 @@ export const PratManager: React.FC = () => {
                         max="10"
                         value={s.weight}
                         onChange={(e) => handleUpdateStep(sIdx, 'weight', Number(e.target.value))}
-                        className="w-10 bg-transparent text-amber-400 font-black text-xs focus:outline-none"
+                        className="w-10 bg-transparent text-amber-400 font-black text-xs focus:outline-none font-mono"
                       />
-                      <span className="text-[10px] text-slate-400">pts</span>
+                      <span className="text-[10px] text-slate-400 font-bold">pts</span>
                     </div>
 
                     <button
@@ -645,10 +647,10 @@ export const PratManager: React.FC = () => {
                   placeholder={`Descreva a ação operacional da etapa ${sIdx + 1}...`}
                   value={s.title}
                   onChange={(e) => handleUpdateStep(sIdx, 'title', e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 p-3 rounded-xl text-white text-sm font-semibold focus:outline-none"
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 p-3 rounded-xl text-white text-sm font-black focus:outline-none uppercase tracking-wide"
                 />
 
-                {/* IMAGEM DO EQUIPAMENTO / LOCAL DE INSPEÇÃO */}
+                {/* IMAGEM DO EQUIPAMENTO COM NORMALIZADOR DINÂMICO E PROTEÇÃO ONERROR */}
                 <div className="p-3 bg-slate-900/60 border border-slate-800 border-dashed rounded-2xl flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <ImageIcon className="w-4 h-4 text-amber-400" />
@@ -657,17 +659,25 @@ export const PratManager: React.FC = () => {
 
                   {s.imageUrl ? (
                     <div className="relative">
-                      <img src={s.imageUrl} alt="" className="h-12 w-20 object-cover rounded-lg border border-slate-700" />
+                      <img
+                        src={formatImageUrl(s.imageUrl)}
+                        alt="Esquema da Etapa Prática"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                        className="h-14 w-24 object-contain rounded-lg border border-slate-700 bg-slate-950 p-1 shadow-md"
+                      />
                       <button
                         type="button"
                         onClick={() => handleUpdateStep(sIdx, 'imageUrl', '')}
-                        className="absolute -top-1.5 -right-1.5 bg-red-600 text-white p-0.5 rounded-full"
+                        className="absolute -top-1.5 -right-1.5 bg-red-600 hover:bg-red-500 text-white p-0.5 rounded-full cursor-pointer shadow-md transition-colors"
+                        title="Remover imagem"
                       >
                         <X className="w-3 h-3" />
                       </button>
                     </div>
                   ) : (
-                    <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700">
+                    <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors">
                       <span>Anexar Imagem</span>
                       <input type="file" accept="image/*" onChange={(e) => handleImageUpload(sIdx, e)} className="hidden" />
                     </label>
@@ -684,49 +694,49 @@ export const PratManager: React.FC = () => {
 
                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Escala Mínima</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Escala Mínima</label>
                         <input
                           type="number"
                           value={s.sliderConfig.min}
                           onChange={(e) => handleUpdateSliderConfig(sIdx, 'min', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Escala Máxima</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Escala Máxima</label>
                         <input
                           type="number"
                           value={s.sliderConfig.max}
                           onChange={(e) => handleUpdateSliderConfig(sIdx, 'max', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Unidade de Medida</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Unidade de Medida</label>
                         <input
                           type="text"
                           placeholder="bar, psi, Nm, °C, mm"
                           value={s.sliderConfig.unit}
                           onChange={(e) => handleUpdateSliderConfig(sIdx, 'unit', e.target.value)}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs uppercase"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-amber-400">Valor Nominal Alvo *</label>
+                        <label className="text-[10px] font-bold text-amber-400 uppercase">Valor Nominal Alvo *</label>
                         <input
                           type="number"
                           value={s.sliderConfig.target}
                           onChange={(e) => handleUpdateSliderConfig(sIdx, 'target', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-amber-500/70 p-2 rounded-xl text-white text-xs font-bold"
+                          className="w-full mt-1 bg-slate-950 border border-amber-500/70 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-400">Tolerância Aceitável (±)</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Tolerância Aceitável (±)</label>
                         <input
                           type="number"
                           value={s.sliderConfig.tolerance}
                           onChange={(e) => handleUpdateSliderConfig(sIdx, 'tolerance', Number(e.target.value))}
-                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs"
+                          className="w-full mt-1 bg-slate-950 border border-slate-700 p-2 rounded-xl text-white text-xs font-mono font-bold"
                         />
                       </div>
                     </div>
@@ -752,7 +762,7 @@ export const PratManager: React.FC = () => {
                             placeholder={`Sub-ação ${stepIdx + 1}...`}
                             value={s.options[stepIdx]?.text || ''}
                             onChange={(e) => handleUpdateOptionText(sIdx, stepIdx, e.target.value)}
-                            className="w-full bg-transparent text-xs text-white focus:outline-none font-medium"
+                            className="w-full bg-transparent text-xs text-white focus:outline-none font-bold uppercase"
                           />
                         </div>
                       ))}
@@ -762,7 +772,7 @@ export const PratManager: React.FC = () => {
 
                 {/* NORMA REGULAMENTADORA / PROCEDIMENTO TÉCNICO */}
                 <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
-                  <label className="text-[11px] font-bold text-amber-400 flex items-center gap-1.5">
+                  <label className="text-[11px] font-bold text-amber-400 flex items-center gap-1.5 uppercase">
                     <HelpCircle className="w-3.5 h-3.5" />
                     <span>Critério de Aceitação Técnica / Item de Norma Aplicável</span>
                   </label>
@@ -771,7 +781,7 @@ export const PratManager: React.FC = () => {
                     placeholder="Especifique a referência técnica (ex: NR-12, NR-22, manual do fabricante ou POP-04)..."
                     value={s.technicalStandard}
                     onChange={(e) => handleUpdateStep(sIdx, 'technicalStandard', e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 p-2.5 rounded-xl text-white text-xs focus:outline-none"
+                    className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 p-2.5 rounded-xl text-white text-xs focus:outline-none uppercase"
                   />
                 </div>
               </div>
@@ -783,7 +793,7 @@ export const PratManager: React.FC = () => {
             <button
               type="button"
               onClick={handleAddStep}
-              className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-3 rounded-2xl transition-colors flex items-center justify-center gap-2 border border-slate-700 cursor-pointer text-xs"
+              className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-3 rounded-2xl transition-colors flex items-center justify-center gap-2 border border-slate-700 cursor-pointer text-xs uppercase"
             >
               <Plus className="w-4 h-4 text-amber-400" />
               <span>Adicionar Mais uma Etapa Operacional</span>
@@ -793,7 +803,7 @@ export const PratManager: React.FC = () => {
               type="submit"
               disabled={loading}
               className={
-                'flex-1 font-black py-3.5 rounded-2xl text-white shadow-lg transition-all cursor-pointer disabled:opacity-50 text-xs ' +
+                'flex-1 font-black py-3.5 rounded-2xl text-white shadow-lg transition-all cursor-pointer disabled:opacity-50 text-xs uppercase tracking-wider ' +
                 (editingPratId
                   ? 'bg-orange-600 hover:bg-orange-500 shadow-orange-600/30'
                   : 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/20')
@@ -838,7 +848,7 @@ export const PratManager: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => handleEditPractice(prat)}
-                      className="text-slate-400 hover:text-amber-400 p-1 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                      className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
                       title="Editar roteiro"
                     >
                       <Edit3 className="w-4 h-4" />
@@ -846,7 +856,7 @@ export const PratManager: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => handleDeletePractice(prat.id)}
-                      className="text-slate-500 hover:text-red-400 p-1 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                      className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
                       title="Excluir roteiro"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -855,7 +865,7 @@ export const PratManager: React.FC = () => {
                 </div>
 
                 <div>
-                  <h3 className="font-bold text-white text-sm">{prat.title}</h3>
+                  <h3 className="font-bold text-white text-sm uppercase">{prat.title}</h3>
                   <p className="text-xs text-slate-400 mt-1">
                     {prat.subject?.name || 'Geral'} • <strong className="text-amber-400">{prat.questions?.length || 0} etapas</strong>
                   </p>

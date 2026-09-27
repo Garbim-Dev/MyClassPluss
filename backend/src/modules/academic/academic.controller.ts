@@ -1,53 +1,93 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Req, Res } from '@nestjs/common';
 import { AcademicService } from './academic.service';
 import { AuthGuard } from '@nestjs/passport';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { NetworkService } from './network.service';
+import * as express from 'express'; // ⚡ Elimina o erro TS1272 no decorador @Res()
+import { BackupService } from './backup.service';
 
 @Controller('academic')
-@UseGuards(AuthGuard('jwt'))
 export class AcademicController {
-  constructor(private readonly academicService: AcademicService) {}
+  constructor(
+    private readonly academicService: AcademicService,
+    private readonly networkService: NetworkService,
+    private readonly backupService: BackupService,
+  ) {}
 
-  // ⚡ Rotas de Gestão de Instituições
+  @Get('backup/export')
+  @UseGuards(AuthGuard('jwt'))
+  async exportBackup(@Res() res: express.Response) {
+    const backupData = await this.backupService.exportFullBackup();
+    const fileName = `MyClassPluss_Backup_${new Date().toISOString().split('T')[0]}.json`;
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+    return res.send(JSON.stringify(backupData, null, 2));
+  }
+
+  @Post('backup/restore')
+  @UseGuards(AuthGuard('jwt'))
+  async restoreBackup(@Body() body: any) {
+    return this.backupService.restoreBackup(body);
+  }
+
+  @Get('network/interfaces')
+  @UseGuards(AuthGuard('jwt'))
+  getNetworkInterfaces() {
+    const interfaces = this.networkService.getActiveInterfaces();
+    return {
+      interfaces,
+      count: interfaces.length,
+    };
+  }
+
+  // ⚡ Gestão de Instituições
   @Get('institutions')
+  @UseGuards(AuthGuard('jwt'))
   listInstitutions(@Req() req: any) {
     const teacherId = req.user?.id || req.user?.userId;
     return this.academicService.listInstitutions(teacherId);
   }
 
   @Post('institutions')
+  @UseGuards(AuthGuard('jwt'))
   createInstitution(@Body() data: any, @Req() req: any) {
     const teacherId = req.user?.id || req.user?.userId;
     return this.academicService.createInstitution(data, teacherId);
   }
 
   @Put('institutions/:id')
+  @UseGuards(AuthGuard('jwt'))
   updateInstitution(@Param('id') id: string, @Body() data: any, @Req() req: any) {
     const teacherId = req.user?.id || req.user?.userId;
     return this.academicService.updateInstitution(id, data, teacherId);
   }
 
   @Delete('institutions/:id')
+  @UseGuards(AuthGuard('jwt'))
   deleteInstitution(@Param('id') id: string) {
     return this.academicService.deleteInstitution(id);
   }
 
   @Get('institutions/:institutionId/courses')
+  @UseGuards(AuthGuard('jwt'))
   async listCourses(@Param('institutionId') institutionId: string) {
     return this.academicService.listCoursesByInstitution(institutionId);
   }
 
   @Post('courses')
+  @UseGuards(AuthGuard('jwt'))
   async createCourse(@Body() body: { name: string; workload: number; institutionId: string }) {
     return this.academicService.createCourse(body);
   }
 
   @Put('courses/:id')
+  @UseGuards(AuthGuard('jwt'))
   async updateCourse(@Param('id') id: string, @Body() body: { name: string; workload: number }) {
     return this.academicService.updateCourse(id, body);
   }
 
   @Delete('courses/:id')
+  @UseGuards(AuthGuard('jwt'))
   async deleteCourse(@Param('id') id: string) {
     return this.academicService.deleteCourse(id);
   }
@@ -80,7 +120,6 @@ export class AcademicController {
   @UseGuards(AuthGuard('jwt'))
   async createClass(@Body() body: any, @Req() req: any) {
     const teacherId = req.user?.userId || req.user?.id;
-    // Se o frontend envia como dados de turma simples, redireciona para createDemand
     return this.academicService.createDemand(body, teacherId);
   }
 
@@ -112,6 +151,7 @@ export class AcademicController {
     return this.academicService.enrollStudentManual(classId, body);
   }
 
+  // ⚡ Acesso do Aluno (Entrada por Código sem exigência de JWT de instrutor)
   @Post('join-by-code')
   async joinClassByCode(@Body() body: { classCode: string; name: string; email: string }) {
     return this.academicService.joinClassByCode(body.classCode, body.name, body.email);
@@ -123,13 +163,19 @@ export class AcademicController {
     return this.academicService.updateStudent(id, body);
   }
 
+  @Get('student/portal-summary')
+  @UseGuards(AuthGuard('jwt'))
+  async getStudentPortalSummary(@Req() req: any) {
+    const userId = req.user?.id || req.user?.userId || req.user?.sub;
+    return this.academicService.getStudentPortalSummary(userId);
+  }
+
   @Delete('enrollments/:enrollmentId')
   @UseGuards(AuthGuard('jwt'))
   async removeStudentEnrollment(@Param('enrollmentId') enrollmentId: string) {
     return this.academicService.removeStudentEnrollment(enrollmentId);
   }
 
-  // ⚡ Atualizar Demanda / Turma
   @Post('demands')
   @UseGuards(AuthGuard('jwt'))
   async createDemand(@Body() body: any, @Req() req: any) {
@@ -137,7 +183,6 @@ export class AcademicController {
     return this.academicService.createDemand(body, teacherId);
   }
 
-  // Se o seu frontend também disparar para a rota no singular ('demand'), adicione um alias:
   @Post('demand')
   @UseGuards(AuthGuard('jwt'))
   async createDemandAlias(@Body() body: any, @Req() req: any) {
@@ -145,7 +190,7 @@ export class AcademicController {
     return this.academicService.createDemand(body, teacherId);
   }
 
-  @Put('demand/:id') // Aceita tanto /demand/:id quanto /demands/:id se preferir duplicar o decorator
+  @Put('demand/:id')
   @UseGuards(AuthGuard('jwt'))
   async updateDemand(@Param('id') id: string, @Body() body: any, @Req() req: any) {
     const teacherId = req.user?.userId || req.user?.id;
@@ -159,7 +204,6 @@ export class AcademicController {
     return this.academicService.updateDemand(id, body, teacherId);
   }
 
-  // ⚡ Excluir Demanda / Turma
   @Delete('demand/:id')
   @UseGuards(AuthGuard('jwt'))
   async deleteDemand(@Param('id') id: string) {
@@ -172,35 +216,36 @@ export class AcademicController {
     return this.academicService.deleteDemand(id);
   }
 
-  @Get('classes')
-  listClasses(@Req() req: any) {
-    const teacherId = req.user?.id || req.user?.userId;
-    return this.academicService.listClasses(teacherId);
-  }
-
   @Get('subjects')
+  @UseGuards(AuthGuard('jwt'))
   async listSubjects() {
     return this.academicService.listSubjects();
   }
 
   @Post('subjects')
+  @UseGuards(AuthGuard('jwt'))
   async createSubject(@Body() body: { name: string; workload: number }) {
     return this.academicService.createSubject(body);
   }
 
   @Put('subjects/:id')
+  @UseGuards(AuthGuard('jwt'))
   async updateSubject(@Param('id') id: string, @Body() body: { name: string; workload: number }) {
     return this.academicService.updateSubject(id, body);
   }
 
   @Delete('subjects/:id')
+  @UseGuards(AuthGuard('jwt'))
   async deleteSubject(@Param('id') id: string) {
     return this.academicService.deleteSubject(id);
   }
 
   @Get('classes/:id/performance')
-  async getClassPerformance(@Param('id') id: string) {
-    return this.academicService.getClassPerformance(id);
+  async getClassPerformance(
+    @Param('id') classId: string,
+    @Query('subjectId') subjectId?: string,
+  ) {
+    return this.academicService.getClassPerformance(classId, subjectId);
   }
 
   @Get('classes/:id/qrcode')
@@ -208,13 +253,13 @@ export class AcademicController {
     return this.academicService.generateQrCode(id, serverIp);
   }
 
-  // ⚡ Rota para submissão e correção da Avaliação Formal
   @Post('evaluations/submit-exam')
   submitFormalExam(@Body() body: any) {
     return this.academicService.submitFormalExam(body);
   }
 
   @Get('evaluations/:quizId/class/:classId/dossier')
+  @UseGuards(AuthGuard('jwt'))
   getExamDossier(
     @Param('quizId') quizId: string,
     @Param('classId') classId: string,
@@ -222,10 +267,16 @@ export class AcademicController {
     return this.academicService.getExamDossier(quizId, classId);
   }
 
-  // ⚡ Rota para buscar notas do aluno no Boletim Oficial
+  // ⚡ Consulta de notas acessível pelo Portal do Aluno
   @Get('student-grades/:userId')
   getStudentGrades(@Param('userId') userId: string) {
     return this.academicService.getStudentGrades(userId);
+  }
+
+  // ⚡ Resumo completo do portal do aluno
+  @Get('student/:userId/summary')
+  getStudentPortalSummaryParam(@Param('userId') userId: string) {
+    return this.academicService.getStudentPortalSummary(userId);
   }
 
   @Post('classes/:classId/attendance')
@@ -246,7 +297,6 @@ export class AcademicController {
     return this.academicService.getClassAttendanceByDate(classId, date);
   }
 
- // ⚡ Rotas para o Histórico de Sessões (suporta plural e singular)
   @Get('sessions/history')
   @UseGuards(AuthGuard('jwt'))
   async getSessionsHistoryPlural() {
@@ -263,5 +313,97 @@ export class AcademicController {
   @UseGuards(AuthGuard('jwt'))
   async deleteQuizSession(@Param('id') id: string) {
     return this.academicService.deleteQuizSession(id);
+  }
+
+  @Get('classes/:id/attendance-report')
+  async getConsolidatedAttendanceReport(@Param('id') id: string) {
+    return this.academicService.getConsolidatedAttendanceReport(id);
+  }
+
+  @Get('personal-questions')
+  @UseGuards(AuthGuard('jwt'))
+  async listPersonalQuestions(
+    @Req() req: any,
+    @Query('search') search?: string,
+    @Query('tag') tag?: string,
+    @Query('favorites') favorites?: string,
+  ) {
+    const teacherId = req.user?.id || req.user?.userId;
+    return this.academicService.listPersonalQuestions(
+      teacherId,
+      search,
+      tag,
+      favorites === 'true',
+    );
+  }
+
+  @Post('personal-questions')
+  @UseGuards(AuthGuard('jwt'))
+  async createPersonalQuestion(@Req() req: any, @Body() data: any) {
+    const teacherId = req.user?.id || req.user?.userId;
+    return this.academicService.createPersonalQuestion(teacherId, data);
+  }
+
+  @Put('personal-questions/:id/favorite')
+  @UseGuards(AuthGuard('jwt'))
+  async toggleFavorite(@Req() req: any, @Param('id') id: string) {
+    const teacherId = req.user?.id || req.user?.userId;
+    return this.academicService.toggleFavoriteQuestion(id, teacherId);
+  }
+
+  @Delete('personal-questions/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async deletePersonalQuestion(@Req() req: any, @Param('id') id: string) {
+    const teacherId = req.user?.id || req.user?.userId;
+    return this.academicService.deletePersonalQuestion(id, teacherId);
+  }
+
+  // =========================================================================
+  // ⚡ ROTAS DE AULAS / SLIDES / MATERIAIS DE ESTUDO (RESOLVE O 404 DO CONTENTMANAGER)
+  // =========================================================================
+  @Get('subjects/:subjectId/lessons')
+  async listLessonsBySubject(@Param('subjectId') subjectId: string) {
+    return this.academicService.listLessonsBySubject(subjectId);
+  }
+
+  @Post('lessons')
+  async createLesson(
+    @Body() body: { title: string; description?: string; fileUrl?: string; subjectId: string; classId?: string }
+  ) {
+    try {
+      return await this.academicService.createLesson(body);
+    } catch (err: any) {
+      console.error('[AcademicController] Falha em POST /academic/lessons:', err);
+      throw err;
+    }
+  }
+
+  @Get('classes/:classId/lessons')
+  async listLessonsByClass(@Param('classId') classId: string) {
+    return this.academicService.listLessonsByClass(classId);
+  }
+
+  @Delete('lessons/:id')
+  async deleteLesson(@Param('id') id: string) {
+    return this.academicService.deleteLesson(id);
+  }
+
+  // ⚡ Exclui submissões de uma atividade para toda a turma
+  @Delete('classes/:classId/activities/:quizId/submissions')
+  async deleteActivityFromClass(
+    @Param('classId') classId: string,
+    @Param('quizId') quizId: string,
+  ) {
+    return this.academicService.deleteActivitySubmissionsFromClass(classId, quizId);
+  }
+
+  // ⚡ Exclui a submissão de um aluno específico (Permitir Refazer)
+  @Delete('classes/:classId/activities/:quizId/students/:userId/submission')
+  async deleteStudentSubmission(
+    @Param('classId') classId: string,
+    @Param('quizId') quizId: string,
+    @Param('userId') userId: string,
+  ) {
+    return this.academicService.deleteStudentSubmission(classId, quizId, userId);
   }
 }

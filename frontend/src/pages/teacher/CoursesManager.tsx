@@ -70,10 +70,10 @@ export const CoursesManager: React.FC<CoursesManagerProps> = ({ institutionId, i
 
     try {
       if (editingId) {
-        await api.put(`/academic/courses/${editingId}`, { name, workload: Number(workload) });
+        await api.put(`/academic/courses/${editingId}`, { name, workload: Number(workload) || 1200 });
         setSuccessMsg('Curso atualizado com sucesso!');
       } else {
-        await api.post('/academic/courses', { name, workload: Number(workload), institutionId });
+        await api.post('/academic/courses', { name, workload: Number(workload) || 1200, institutionId });
         setSuccessMsg('Curso cadastrado com sucesso!');
       }
 
@@ -232,11 +232,28 @@ export const CoursesManager: React.FC<CoursesManagerProps> = ({ institutionId, i
                 <label className="block text-xs font-bold text-slate-400 mb-1">Carga Horária (Horas) *</label>
                 <input
                   type="number"
+                  min={1}
+                  max={9999}
                   required
                   value={workload}
-                  onChange={(e) => setWorkload(e.target.value === '' ? '' : Number(e.target.value))}
+                  onChange={(e) => {
+                    const valStr = e.target.value;
+                    if (valStr === '') {
+                      setWorkload('');
+                      return;
+                    }
+
+                    const num = Number(valStr);
+                    if (num > 9999) {
+                      setWorkload(9999);
+                    } else if (num < 0) {
+                      setWorkload(0);
+                    } else {
+                      setWorkload(num); // ⚡ Passa como number em vez de string
+                    }
+                  }}
                   placeholder="Ex: 1200"
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none"
                 />
               </div>
 

@@ -4,14 +4,15 @@ let socket: Socket | null = null;
 
 export const getSocket = (): Socket => {
   if (!socket) {
-    const host = window.location.hostname || 'localhost';
+    // Usa o IP e a porta de onde o front está rodando
+    const host = window.location.hostname;
     socket = io(`http://${host}:3000`, {
-      transports: ['websocket'], // ⚡ Força conexão WebSocket direta e instantânea (sem polling)
-      upgrade: false,
+      transports: ['websocket', 'polling'], // Fallback para polling se websocket oscilar
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 500,
-      timeout: 5000,
+      reconnectionDelayMax: 2000,
+      timeout: 10000,
     });
   }
   return socket;

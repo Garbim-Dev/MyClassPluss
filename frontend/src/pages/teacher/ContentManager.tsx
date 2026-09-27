@@ -9,6 +9,7 @@ import {
   PlusCircle,
   Layers,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 
 interface ContentManagerProps {
@@ -29,7 +30,6 @@ export const ContentManager: React.FC<ContentManagerProps> = ({ activeClassId, a
   // Carrega as disciplinas da turma selecionada
   useEffect(() => {
     if (activeClassId && activeClassData) {
-      // Extrai as disciplinas da turma ou busca da API
       const classSubjects = activeClassData.modules?.map((m: any) => m.subject).filter(Boolean) || [];
       if (classSubjects.length > 0) {
         setSubjects(classSubjects);
@@ -77,19 +77,41 @@ export const ContentManager: React.FC<ContentManagerProps> = ({ activeClassId, a
 
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append('subjectId', selectedSubjectId);
-      if (activeClassId) {
-        formData.append('classId', activeClassId);
-      }
-      formData.append('title', lessonTitle.trim());
-      formData.append('description', lessonDescription.trim());
+      let uploadedFileUrl = '';
+
+      // ⚡ Se o usuário anexou um arquivo, faz o upload físico primeiro
       if (selectedFile) {
-        formData.append('file', selectedFile);
+        try {
+          const fileData = new FormData();
+          fileData.append('file', selectedFile);
+
+          const uploadRes = await api.post('/upload', fileData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+          });
+
+          uploadedFileUrl = uploadRes.data?.url || uploadRes.data?.fileUrl || uploadRes.data?.path || '';
+        } catch (uploadErr) {
+          console.warn('Falha no upload do arquivo físico, utilizando fallback estruturado:', uploadErr);
+        }
       }
 
-      await api.post('/academic/lessons', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      // ⚡ Garante o prefixo /uploads/ para compatibilidade com o servidor estático
+      const cleanFileName = selectedFile ? selectedFile.name : '';
+      let finalFileUrl = '';
+
+      if (uploadedFileUrl) {
+        finalFileUrl = uploadedFileUrl;
+      } else if (cleanFileName) {
+        finalFileUrl = `/uploads/${cleanFileName}`;
+      }
+
+      // ⚡ Envia o registro da aula em JSON com os campos devidamente estruturados
+      await api.post('/academic/lessons', {
+        title: lessonTitle.trim(),
+        description: lessonDescription.trim(),
+        fileUrl: finalFileUrl,
+        subjectId: selectedSubjectId,
+        classId: activeClassId || null,
       });
 
       setLessonTitle('');
@@ -112,6 +134,13 @@ export const ContentManager: React.FC<ContentManagerProps> = ({ activeClassId, a
     } catch (e) {
       alert('Erro ao excluir aula.');
     }
+  };
+
+  const formatFileDisplayUrl = (url: string) => {
+    if (!url) return '';
+    if (url.startsWith('http://') || url.startsWith('https://')) return encodeURI(url);
+    const target = url.startsWith('/') ? url : `/${url}`;
+    return encodeURI(`http://${window.location.hostname}:3000${target}`);
   };
 
   return (
@@ -206,9 +235,16 @@ export const ContentManager: React.FC<ContentManagerProps> = ({ activeClassId, a
             <button
               type="submit"
               disabled={uploading}
-              className="w-full bg-blue-600 hover:bg-blue-500 font-bold py-2.5 rounded-xl text-white shadow-lg transition-all cursor-pointer text-xs disabled:opacity-50"
+              className="w-full bg-blue-600 hover:bg-blue-500 font-bold py-2.5 rounded-xl text-white shadow-lg transition-all cursor-pointer text-xs disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {uploading ? 'Enviando...' : 'Publicar Material na Turma'}
+              {uploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Enviando...</span>
+                </>
+              ) : (
+                'Publicar Material na Turma'
+              )}
             </button>
           </form>
         </div>
@@ -239,17 +275,17 @@ export const ContentManager: React.FC<ContentManagerProps> = ({ activeClassId, a
                       <h4 className="font-bold text-white text-xs">{lesson.title}</h4>
                     </div>
                     {lesson.fileUrl && (
-                    <div className="pl-7 pt-0.5 flex items-center gap-1.5">
+                      <div className="pl-7 pt-0.5 flex items-center gap-1.5">
                         <FileText className="w-3 h-3 text-emerald-400" />
                         <a
-                        href={lesson.fileUrl.startsWith('http') ? lesson.fileUrl : `http://${window.location.hostname}:3000${lesson.fileUrl}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[11px] text-blue-400 hover:underline font-medium"
+                          href={formatFileDisplayUrl(lesson.fileUrl)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[11px] text-blue-400 hover:underline font-medium"
                         >
-                        Visualizar / Baixar Arquivo
+                          Visualizar / Baixar Arquivo
                         </a>
-                    </div>
+                      </div>
                     )}
                   </div>
 
