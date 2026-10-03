@@ -1,14 +1,16 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AcademicController } from './academic.controller';
 import { AcademicService } from './academic.service';
 import { LessonController } from './lesson.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NetworkService } from './network.service';
 import { BackupService } from './backup.service';
+import { SessionModule } from '../session/session.module';
 
 @Module({
   imports: [
     PrismaModule,
+    forwardRef(() => SessionModule),
     // outros módulos já importados...
   ],
   controllers: [AcademicController],

@@ -1,5 +1,13 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SessionGateway } from '../session/session.gateway';
 import * as QRCode from 'qrcode';
 import * as os from 'os';
 
@@ -36,7 +44,11 @@ function getLocalNetworkIp(preferredIp?: string): string {
 
 @Injectable()
 export class AcademicService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => SessionGateway))
+    private sessionGateway: SessionGateway,
+  ) {}
 
   // ⚡ Listar todas as instituições do professor logado
   async listInstitutions(teacherId: string) {
@@ -238,8 +250,10 @@ export class AcademicService {
 
   // ⚡ Atualizar dados de uma turma/demanda existente
   async updateDemand(classId: string, data: any, teacherId: string) {
-    const academicClass = await this.prisma.class.findUnique({
-      where: { id: classId },
+    const academicClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
     });
 
     if (!academicClass) {
@@ -247,7 +261,7 @@ export class AcademicService {
     }
 
     await this.prisma.class.update({
-      where: { id: classId },
+      where: { id: academicClass.id },
       data: {
         code: data.classCode,
         courseId: data.courseId || undefined,
@@ -256,7 +270,7 @@ export class AcademicService {
 
     if (data.subjectId || data.room) {
       const existingModule = await this.prisma.classModule.findFirst({
-        where: { classId },
+        where: { classId: academicClass.id },
       });
 
       if (existingModule) {
@@ -275,7 +289,7 @@ export class AcademicService {
       } else if (data.subjectId) {
         await this.prisma.classModule.create({
           data: {
-            classId,
+            classId: academicClass.id,
             subjectId: data.subjectId,
             room: data.room || 'Sala Principal',
             shift: data.shift || 'MATUTINO',
@@ -289,7 +303,7 @@ export class AcademicService {
     }
 
     return this.prisma.class.findUnique({
-      where: { id: classId },
+      where: { id: academicClass.id },
       include: {
         course: true,
         modules: { include: { subject: true } },
@@ -297,22 +311,34 @@ export class AcademicService {
     });
   }
 
-  // ⚡ Excluir turma e limpar dados em cascata com segurança
+  // ⚡ Excluir turma e limpar dados em cascata com segurança (e da memória do Socket)
   async deleteDemand(classId: string) {
-    const academicClass = await this.prisma.class.findUnique({
-      where: { id: classId },
+    const academicClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
     });
 
     if (!academicClass) {
       throw new NotFoundException('Turma não encontrada.');
     }
 
-    await this.prisma.examSubmission.deleteMany({ where: { classId } });
-    await this.prisma.enrollment.deleteMany({ where: { classId } });
-    await this.prisma.classModule.deleteMany({ where: { classId } });
+    const realClassId = academicClass.id;
+
+    // Limpa a memória ativa do WebSocket imediatamente
+    try {
+      this.sessionGateway.clearRoomMemory(realClassId);
+      if (academicClass.code) {
+        this.sessionGateway.clearRoomMemory(academicClass.code);
+      }
+    } catch (e) {}
+
+    await this.prisma.examSubmission.deleteMany({ where: { classId: realClassId } });
+    await this.prisma.enrollment.deleteMany({ where: { classId: realClassId } });
+    await this.prisma.classModule.deleteMany({ where: { classId: realClassId } });
 
     await this.prisma.class.delete({
-      where: { id: classId },
+      where: { id: realClassId },
     });
 
     return { message: 'Turma e todos os seus registros associados foram removidos com sucesso.' };
@@ -349,9 +375,9 @@ export class AcademicService {
     });
   }
 
-  // ⚡ LISTAGEM DE TURMAS COM ALUNOS ESTREITAMENTE ISOLADOS
+  // ⚡ LISTAGEM DE TURMAS COM CONTAGEM REAL DE MATRÍCULAS
   async listClasses(teacherId: string) {
-    return this.prisma.class.findMany({
+    const classes = await this.prisma.class.findMany({
       where: teacherId ? { teacherId } : {},
       include: {
         course: true,
@@ -362,6 +388,7 @@ export class AcademicService {
               select: {
                 id: true,
                 name: true,
+                document: true,
                 email: true,
                 role: true,
               },
@@ -374,17 +401,36 @@ export class AcademicService {
         id: 'desc',
       },
     });
+
+    // Filtra para garantir que apenas matrículas com usuários válidos e existentes sejam computadas
+    return classes.map((c) => {
+      const validEnrollments = c.enrollments.filter((e) => e.user !== null && e.user !== undefined);
+      return {
+        ...c,
+        enrollments: validEnrollments,
+      };
+    });
   }
 
-  // ⚡ LISTAR ALUNOS MATRICULADOS EM UMA TURMA ESPECÍFICA
+  // ⚡ LISTAR ALUNOS MATRICULADOS EM UMA TURMA ESPECÍFICA (Resiliente a UUID e Code)
   async listClassStudents(classId: string) {
+    const targetClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
+      select: { id: true },
+    });
+
+    const realClassId = targetClass?.id || classId;
+
     const enrollments = await this.prisma.enrollment.findMany({
-      where: { classId },
+      where: { classId: realClassId },
       include: {
         user: {
           select: {
             id: true,
             name: true,
+            document: true,
             email: true,
             role: true,
           },
@@ -397,6 +443,7 @@ export class AcademicService {
       enrollmentId: e.id,
       studentId: e.user.id,
       name: e.user.name,
+      document: (e.user as any).document || null,
       email: e.user.email,
       joinedAt: e.createdAt,
     }));
@@ -414,6 +461,15 @@ export class AcademicService {
 
   // ⚡ MATRICULAR ALUNO MANUALMENTE PELO PROFESSOR
   async enrollStudentManual(classId: string, data: { name: string; email: string }) {
+    const targetClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
+      select: { id: true },
+    });
+
+    const realClassId = targetClass?.id || classId;
+
     let student = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
@@ -433,23 +489,62 @@ export class AcademicService {
       where: {
         userId_classId: {
           userId: student.id,
-          classId,
+          classId: realClassId,
         },
       },
       update: {},
       create: {
         userId: student.id,
-        classId,
+        classId: realClassId,
       },
       include: { user: true },
     });
   }
 
-  // ⚡ REMOVER MATRÍCULA DO ALUNO DAQUELA TURMA ESPECÍFICA
+  // ⚡ REMOVER MATRÍCULA DO ALUNO (LIMPEZA TOTAL DO BANCO E DA SALA AO VIVO)
   async removeStudentEnrollment(enrollmentId: string) {
-    return this.prisma.enrollment.delete({
+    // 1. Tenta encontrar a matrícula pelo ID direto
+    let enrollment = await this.prisma.enrollment.findUnique({
       where: { id: enrollmentId },
+      select: { id: true, userId: true, classId: true },
     });
+
+    // 2. Se não achar por ID direto (ou se for o userId passado por engano), faz busca ampla
+    if (!enrollment) {
+      enrollment = await this.prisma.enrollment.findFirst({
+        where: {
+          OR: [
+            { id: enrollmentId },
+            { userId: enrollmentId },
+          ],
+        },
+        select: { id: true, userId: true, classId: true },
+      });
+    }
+
+    if (enrollment) {
+      const { userId, classId, id } = enrollment;
+
+      // Limpa da memória WebSocket
+      try {
+        this.sessionGateway.removeStudentFromMemory(userId, classId);
+      } catch (e) {}
+
+      // Remove todas as variações de matrícula desse aluno nessa turma (UUID e Code)
+      await this.prisma.enrollment.deleteMany({
+        where: {
+          userId,
+          OR: [
+            { classId },
+            { class: { code: classId } },
+          ],
+        },
+      });
+
+      return { success: true, message: 'Matrícula removida com sucesso.' };
+    }
+
+    return { success: false, message: 'Matrícula não encontrada.' };
   }
 
   async listSubjects() {
@@ -457,14 +552,54 @@ export class AcademicService {
       orderBy: { name: 'asc' },
     });
   }
+  
+  // ⚡ QR CODE DE ACESSO À TURMA (COM PIN E CÓDIGO DA TURMA INJETADOS NA URL)
+  async getClassQrCode(classId: string, serverIp?: string) {
+    const targetClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
+      include: { course: true },
+    });
 
+    if (!targetClass) {
+      throw new NotFoundException('Turma não encontrada para geração do QR Code.');
+    }
+
+    const host = (serverIp && serverIp.trim() !== '' && serverIp !== 'localhost')
+      ? serverIp
+      : '192.168.0.10';
+
+    const pinCode = targetClass.code;
+    
+    const joinUrl = `http://${host}:5173/student/join?code=${encodeURIComponent(pinCode)}&classId=${targetClass.id}`;
+
+    const qrCodeImage = await QRCode.toDataURL(joinUrl, {
+      width: 400,
+      margin: 2,
+      color: {
+        dark: '#020617',
+        light: '#ffffff',
+      },
+    });
+
+    return {
+      classId: targetClass.id,
+      classCode: pinCode,
+      courseName: targetClass.course?.name || 'Curso Técnico',
+      joinUrl,
+      qrCodeImage,
+    };
+  }
   
   // =========================================================================
-  // ⚡ CÁLCULO DA NOTA CONSOLIDADA COM LEITURA DIRETA DE SUBMISSÕES
+  // ⚡ CÁLCULO DA NOTA CONSOLIDADA COM LEITURA DIRETA DE SUBMISSÕES (ESCALA 0 A 10)
   // =========================================================================
   async getClassPerformance(classId: string, subjectId?: string) {
-    const classData = await this.prisma.class.findUnique({
-      where: { id: classId },
+    const classData = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
       include: {
         course: true,
         modules: { include: { subject: true } },
@@ -488,9 +623,14 @@ export class AcademicService {
     const currentSubject = classData.modules.find((m) => m.subjectId === targetSubjectId)?.subject || null;
     const subjectName = currentSubject?.name || 'Conhecimentos Gerais';
 
-    // ⚡ Busca todas as submissões reais registradas para esta turma
+    // 2. Busca todas as submissões registradas para esta turma
     const examSubmissions = await this.prisma.examSubmission.findMany({
-      where: { classId },
+      where: {
+        OR: [
+          { classId: classData.id },
+          { classId: classData.code },
+        ],
+      },
       include: {
         quiz: {
           include: { questions: true, subject: true },
@@ -500,13 +640,28 @@ export class AcademicService {
       orderBy: { submittedAt: 'desc' },
     });
 
-    // ⚡ Consolidação aluno por aluno
-    const studentsReport = classData.enrollments.map((enrollment, index) => {
-      const student = enrollment.user;
+    // 3. Unifica alunos: quem já está matriculado + quem realizou avaliações/quizzes na sala
+    const allUsersMap = new Map<string, any>();
+
+    classData.enrollments.forEach((e) => {
+      if (e.user) {
+        allUsersMap.set(e.user.id, e.user);
+      }
+    });
+
+    examSubmissions.forEach((sub) => {
+      if (sub.user && !allUsersMap.has(sub.userId)) {
+        allUsersMap.set(sub.userId, sub.user);
+      }
+    });
+
+    const studentsList = Array.from(allUsersMap.values());
+
+    // 4. Consolidação aluno por aluno na escala de 0,0 a 10,0
+    const studentsReport = studentsList.map((student, index) => {
       const studentName = student?.name || student?.email || `Aluno #${index + 1}`;
 
-      // Encontra submissões deste estudante
-      let studentSubs = examSubmissions.filter(
+      const studentSubs = examSubmissions.filter(
         (s: any) =>
           s.userId === student.id ||
           s.user?.id === student.id ||
@@ -521,27 +676,34 @@ export class AcademicService {
 
       studentSubs.forEach((sub: any) => {
         const correct = Number(sub.totalCorrect ?? 0);
-        const totalQ = Number(sub.totalQuestions ?? 5) || 5;
-        const grade = sub.totalScore !== undefined && sub.totalScore !== null
-          ? Number(sub.totalScore)
-          : Number(((correct / totalQ) * 10).toFixed(1));
+        const totalQ = Number(sub.totalQuestions ?? 1) || 1;
+        
+        // ⚡ Nota individual de cada atividade (0 a 10)
+        let grade = 0.0;
+        if (sub.totalScore !== undefined && sub.totalScore !== null) {
+          grade = Number(Number(sub.totalScore).toFixed(1));
+        } else {
+          grade = correct === totalQ ? 10.0 : Number(((correct / totalQ) * 10.0).toFixed(1));
+        }
+        grade = Math.max(0.0, Math.min(10.0, grade));
 
         sumActivityGrades += grade;
 
         const actItem = {
-          id: sub.id, // ⚡ O ID único da submissão específica, e não o quizId genérico!
+          id: sub.id,
           quizId: sub.quizId,
-          title: sub.quiz?.title || 'Quiz de Conhecimentos Gerais',
-          type: sub.quiz?.type || 'QUIZ_INTERATIVO',
+          title: sub.quiz?.title || 'Avaliação / Atividade',
+          type: sub.quiz?.type || 'AVALIACAO',
           scoreOrGrade: grade.toFixed(1),
           date: new Date(sub.submittedAt).toLocaleDateString('pt-BR'),
           isApproved: grade >= 7.0,
           statusLabel: grade >= 7.0 ? 'Concluída com Sucesso' : 'Abaixo da Média',
         };
 
-        if ((sub.quiz?.type as string) === 'AVALIACAO' || (sub.quiz?.type as string) === 'AVALIAÇAO') {
+        const qType = String(sub.quiz?.type || '').toUpperCase();
+        if (qType === 'AVALIACAO' || qType === 'AVALIAÇAO') {
           examsCompleted.push(actItem);
-        } else if ((sub.quiz?.type as string) === 'ATIVIDADE') {
+        } else if (qType === 'ATIVIDADE') {
           practicesCompleted.push(actItem);
         } else {
           quizzesCompleted.push({
@@ -551,37 +713,25 @@ export class AcademicService {
         }
       });
 
-      // ⚡ Fallback de segurança se a submissão tiver ficado com a chave do socket
-      if (
-        studentSubs.length === 0 &&
-        (student.name?.toLowerCase().includes('emanuela') || student.email?.includes('81032898'))
-      ) {
-        sumActivityGrades = 10.0;
-        quizzesCompleted.push({
-          id: 'sub_live_emanuela_quiz',
-          title: 'Quiz de Conhecimentos Gerais',
-          type: 'QUIZ_INTERATIVO',
-          scoreOrGrade: '5.783 pts (10.0)',
-          date: new Date().toLocaleDateString('pt-BR'),
-          isApproved: true,
-          statusLabel: 'Concluído com Sucesso',
-        });
-      }
-
-      const totalActivitiesFinished = quizzesCompleted.length + examsCompleted.length + practicesCompleted.length;
-      const divisor = totalActivitiesFinished > 0 ? totalActivitiesFinished : 1;
-      const finalGrade = totalActivitiesFinished > 0
-        ? Number((sumActivityGrades / divisor).toFixed(1))
+      // ⚡⚡ CÁLCULO DA MÉDIA DA DISCIPLINA ⚡⚡
+      // Soma de todas as notas / (Qtd de Avaliações + Qtd de Quizzes + Qtd de Atividades)
+      const totalActivitiesCount = examsCompleted.length + quizzesCompleted.length + practicesCompleted.length;
+      
+      const finalGrade = totalActivitiesCount > 0
+        ? Number((sumActivityGrades / totalActivitiesCount).toFixed(1))
         : 0.0;
+
+      const isApproved = finalGrade >= 7.0;
 
       return {
         rank: index + 1,
         userId: student.id,
         userName: studentName,
         name: studentName,
+        document: student.document || undefined,
         email: student.email,
         totalGrade: finalGrade,
-        isApproved: finalGrade >= 7.0,
+        isApproved,
         attendancePercentage: 100,
         totalPresences: 20,
         totalAbsences: 0,
@@ -627,30 +777,137 @@ export class AcademicService {
     };
   }
 
-  async generateQrCode(classId: string, serverIp?: string) {
-    const classItem = await this.prisma.class.findUnique({
-      where: { id: classId },
-      include: { course: true },
+  // ⚡ BOLETIM E RELATÓRIO FORMATIVO INDIVIDUAL DO ALUNO
+  async getStudentReport(userId: string) {
+    let userRecord = await (this.prisma.user as any).findFirst({
+      where: {
+        OR: [
+          { id: userId },
+          { document: userId },
+          { email: `${userId}@aluno.myclasspluss.com` },
+        ],
+      },
+      select: { id: true, name: true, document: true, email: true },
     });
 
-    if (!classItem) throw new NotFoundException('Turma não encontrada.');
+    const targetUserId = userRecord?.id || userId;
 
-    const host = (serverIp && serverIp.trim() !== '') ? serverIp : 'localhost';
-    const joinUrl = `http://${host}:5173/join?classId=${classItem.id}`;
-    
-    const qrCodeImage = await QRCode.toDataURL(joinUrl, {
-      width: 400,
-      margin: 2,
-      color: { dark: '#020617', light: '#ffffff' },
+    const submissions = await this.prisma.examSubmission.findMany({
+      where: { userId: targetUserId },
+      include: {
+        quiz: {
+          include: {
+            subject: true,
+            questions: {
+              include: { options: true },
+              orderBy: { order: 'asc' },
+            },
+          },
+        },
+        class: {
+          include: { course: true },
+        },
+        answers: {
+          include: { question: true },
+        },
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+
+    // Agrupamento por disciplina
+    const subjectsMap = new Map<string, {
+      subjectId: string;
+      subjectName: string;
+      courseName: string;
+      exams: any[];
+      quizzes: any[];
+      practices: any[];
+      totalGradeSum: number;
+    }>();
+
+    submissions.forEach((sub: any) => {
+      const subjectId = sub.quiz?.subjectId || 'geral';
+      const subjectName = sub.quiz?.subject?.name || 'Conhecimentos Gerais';
+      const courseName = sub.class?.course?.name || 'Treinamento Técnico';
+
+      if (!subjectsMap.has(subjectId)) {
+        subjectsMap.set(subjectId, {
+          subjectId,
+          subjectName,
+          courseName,
+          exams: [],
+          quizzes: [],
+          practices: [],
+          totalGradeSum: 0,
+        });
+      }
+
+      const group = subjectsMap.get(subjectId)!;
+      const grade = Number(Number(sub.totalScore ?? 0).toFixed(1));
+      group.totalGradeSum += grade;
+
+      const qType = String(sub.quiz?.type || '').toUpperCase();
+      const activityItem = {
+        submissionId: sub.id,
+        quizId: sub.quizId,
+        title: sub.quiz?.title || 'Avaliação',
+        type: qType || 'AVALIACAO',
+        score: grade,
+        totalCorrect: sub.totalCorrect,
+        totalQuestions: sub.totalQuestions,
+        isApproved: grade >= 7.0,
+        timeSpentSeconds: sub.timeSpentSeconds,
+        submittedAt: sub.submittedAt,
+        answers: sub.answers?.map((ans: any) => ({
+          questionTitle: ans.question?.title,
+          studentAnswer: ans.studentAnswer,
+          isCorrect: ans.isCorrect,
+          pointsAwarded: ans.pointsAwarded,
+          justification: ans.question?.justification,
+        })),
+      };
+
+      if (qType === 'AVALIACAO' || qType === 'AVALIAÇAO') {
+        group.exams.push(activityItem);
+      } else if (qType === 'ATIVIDADE') {
+        group.practices.push(activityItem);
+      } else {
+        group.quizzes.push(activityItem);
+      }
+    });
+
+    // Consolidação final por disciplina
+    const subjectsReport = Array.from(subjectsMap.values()).map((subj) => {
+      const totalActivities = subj.exams.length + subj.quizzes.length + subj.practices.length;
+      const finalSubjectGrade = totalActivities > 0
+        ? Number((subj.totalGradeSum / totalActivities).toFixed(1))
+        : 0.0;
+
+      return {
+        subjectId: subj.subjectId,
+        subjectName: subj.subjectName,
+        courseName: subj.courseName,
+        totalActivities,
+        totalExams: subj.exams.length,
+        totalQuizzes: subj.quizzes.length,
+        totalPractices: subj.practices.length,
+        finalGrade: finalSubjectGrade,
+        isApproved: finalSubjectGrade >= 7.0,
+        exams: subj.exams,
+        quizzes: subj.quizzes,
+        practices: subj.practices,
+      };
     });
 
     return {
-      classId: classItem.id,
-      classCode: classItem.code,
-      courseName: classItem.course.name,
-      joinUrl,
-      qrCodeImage,
+      student: userRecord,
+      subjects: subjectsReport,
+      totalSubmissions: submissions.length,
     };
+  }
+
+  async generateQrCode(classId: string, serverIp?: string) {
+    return this.getClassQrCode(classId, serverIp);
   }
 
   // ⚡ ENTRADA POR CÓDIGO DA TURMA ISOLADA PELO CLASS_ID
@@ -712,12 +969,12 @@ export class AcademicService {
     };
   }
 
-  // ⚡ SUBMISSÃO DA AVALIAÇÃO FORMAL COM A REGRA DE 10 PONTOS PROPORCIONAIS
+  // ⚡ SUBMISSÃO DA AVALIAÇÃO FORMAL E ATIVIDADE PRÁTICA (REGRA: 10.0 / TOTAL_QUESTÕES)
   async submitFormalExam(body: {
     quizId: string;
     userId: string;
-    classId: string;
-    timeSpentSeconds: number;
+    classId?: string | null;
+    timeSpentSeconds?: number;
     answers: {
       questionId: string;
       answerValue: any;
@@ -727,20 +984,84 @@ export class AcademicService {
       where: { id: body.quizId },
       include: {
         questions: {
-          include: {
-            options: true,
-          },
+          include: { options: true },
           orderBy: { order: 'asc' },
         },
       },
     });
 
     if (!quiz) {
-      throw new Error('Avaliação não encontrada.');
+      throw new NotFoundException('Avaliação não encontrada.');
     }
 
+    // 1. Identifica o usuário
+    let userRecord = await (this.prisma.user as any).findFirst({
+      where: {
+        OR: [
+          { id: body.userId },
+          { document: body.userId },
+          { email: `${body.userId}@aluno.myclasspluss.com` },
+        ],
+      },
+    });
+
+    if (!userRecord) {
+      userRecord = await (this.prisma.user as any).create({
+        data: {
+          name: 'Aluno Avaliado',
+          email: `${body.userId || Date.now()}@aluno.myclasspluss.com`,
+          passwordHash: '$2b$10$AutoRegisteredStudentDefaultPasswordHash...',
+          role: 'ALUNO',
+        },
+      });
+    }
+    const targetUserId = userRecord.id;
+
+    // 2. Valida turma se informada
+    let validClassId: string | null = null;
+    if (body.classId && typeof body.classId === 'string' && body.classId.trim() !== '') {
+      const classExists = await this.prisma.class.findFirst({
+        where: {
+          OR: [
+            { id: body.classId.trim() },
+            { code: body.classId.trim() },
+          ],
+        },
+      });
+      if (classExists) validClassId = classExists.id;
+    }
+
+    if (validClassId) {
+      await this.prisma.enrollment.upsert({
+        where: {
+          userId_classId: {
+            userId: targetUserId,
+            classId: validClassId,
+          },
+        },
+        create: {
+          userId: targetUserId,
+          classId: validClassId,
+        },
+        update: {},
+      }).catch(() => {});
+    }
+
+    // ⚡ 3. TRAVA DE TENTATIVA ÚNICA
+    const existingSubmission = await this.prisma.examSubmission.findFirst({
+      where: {
+        quizId: body.quizId,
+        userId: targetUserId,
+      },
+    });
+
+    if (existingSubmission) {
+      throw new BadRequestException('Esta avaliação já foi entregue anteriormente e não pode ser refeita.');
+    }
+
+    // ⚡ 4. PONTUAÇÃO UNIFORME: CADA QUESTÃO VALE EXATAMENTE (10.0 / totalQuestions)
     const totalQuestions = quiz.questions.length;
-    const valuePerQuestion = totalQuestions > 0 ? 10.0 / totalQuestions : 1.0;
+    const valuePerQuestion = totalQuestions > 0 ? Number((10.0 / totalQuestions).toFixed(2)) : 1.0;
     let correctCount = 0;
 
     const evaluatedAnswers = quiz.questions.map((q) => {
@@ -779,51 +1100,96 @@ export class AcademicService {
           } catch (e) {
             isCorrect = false;
           }
+        } else if (q.type === 'PUZZLE') {
+          const correctOrderTexts = [...q.options]
+            .sort((a, b) => (a.correctOrder ?? 0) - (b.correctOrder ?? 0))
+            .map((opt) => opt.text.trim().toLowerCase());
+          const studentOrderTexts = Array.isArray(rawValue)
+            ? rawValue.map((item: any) => (typeof item === 'string' ? item : item.text || '').trim().toLowerCase())
+            : [];
+          isCorrect = correctOrderTexts.length > 0 && correctOrderTexts.every((txt, idx) => txt === studentOrderTexts[idx]);
         }
       }
 
-      if (isCorrect) {
-        correctCount += 1;
-      }
+      if (isCorrect) correctCount += 1;
+
+      const stringifiedAnswer = isBlank 
+        ? 'Em branco' 
+        : typeof rawValue === 'object' 
+        ? JSON.stringify(rawValue) 
+        : String(rawValue);
 
       return {
         questionId: q.id,
         title: q.title,
         type: q.type,
-        weight: Number(valuePerQuestion.toFixed(2)),
-        justification: q.justification,
+        weight: valuePerQuestion,
+        justification: q.justification || '',
         isCorrect,
-        studentAnswer: isBlank ? 'Em branco' : String(rawValue),
-        pointsAwarded: isCorrect ? Number(valuePerQuestion.toFixed(2)) : 0,
+        studentAnswer: stringifiedAnswer,
+        pointsAwarded: isCorrect ? valuePerQuestion : 0,
       };
     });
 
-    // ⚡ Regra de cálculo: (Acertos / Total de Questões) * 10,0
-    const finalGrade = Number(
-      (totalQuestions > 0 ? (correctCount / totalQuestions) * 10.0 : 0).toFixed(1)
-    );
+    // ⚡ 5. NOTA DA ATIVIDADE: 100% de acertos = 10.0 exato
+    let finalGrade = 0.0;
+    if (totalQuestions > 0) {
+      if (correctCount === totalQuestions) {
+        finalGrade = 10.0;
+      } else {
+        finalGrade = Number(((correctCount / totalQuestions) * 10.0).toFixed(1));
+      }
+    }
+    finalGrade = Math.max(0.0, Math.min(10.0, finalGrade));
     const isApproved = finalGrade >= 7.0;
 
-    const submission = await this.prisma.examSubmission.create({
-      data: {
+    // 6. Salva a submissão
+    const submissionData: any = {
+      quizId: body.quizId,
+      userId: targetUserId,
+      totalScore: finalGrade,
+      totalCorrect: correctCount,
+      totalQuestions,
+      isApproved,
+      timeSpentSeconds: Number(body.timeSpentSeconds) || 0,
+      answers: {
+        create: evaluatedAnswers.map((ea) => ({
+          questionId: ea.questionId,
+          studentAnswer: ea.studentAnswer,
+          isCorrect: ea.isCorrect,
+          pointsAwarded: ea.pointsAwarded,
+        })),
+      },
+    };
+
+    if (validClassId) submissionData.classId = validClassId;
+
+    const submission = await (this.prisma.examSubmission as any).create({
+      data: submissionData,
+    });
+
+    // ⚡ 7. Notificação ao vivo via Socket
+    try {
+      const roomToNotify = validClassId || body.classId || 'all';
+      const livePayload = {
         quizId: body.quizId,
-        userId: body.userId,
-        classId: body.classId,
+        classId: validClassId,
+        userId: targetUserId,
+        userName: userRecord.name,
+        nickname: userRecord.nickname || userRecord.name,
+        document: userRecord.document,
         totalScore: finalGrade,
         totalCorrect: correctCount,
         totalQuestions,
         isApproved,
-        timeSpentSeconds: body.timeSpentSeconds || 0,
-        answers: {
-          create: evaluatedAnswers.map((ea) => ({
-            questionId: ea.questionId,
-            studentAnswer: ea.studentAnswer,
-            isCorrect: ea.isCorrect,
-            pointsAwarded: ea.pointsAwarded,
-          })),
-        },
-      },
-    });
+        timeSpentSeconds: Number(body.timeSpentSeconds) || 0,
+        submittedAt: submission.submittedAt || new Date(),
+      };
+
+      this.sessionGateway.server.to(roomToNotify).emit('exam_submitted_live', livePayload);
+      this.sessionGateway.server.to(`room_${roomToNotify}`).emit('exam_submitted_live', livePayload);
+      this.sessionGateway.server.emit('exam_submitted_live', livePayload);
+    } catch (e) {}
 
     return {
       submissionId: submission.id,
@@ -874,8 +1240,8 @@ export class AcademicService {
         rank: index + 1,
         userId: sub.userId,
         userName: sub.user?.name || 'Aluno',
-        score: Math.round(sub.totalScore * 100),
-        totalGrade: sub.totalScore,
+        score: Math.round(Number(sub.totalScore ?? 0) * 100),
+        totalGrade: Number(Number(sub.totalScore ?? 0).toFixed(1)),
         isApproved: sub.isApproved,
         totalCorrect: sub.totalCorrect,
         totalQuestions: sub.totalQuestions,
@@ -937,7 +1303,7 @@ export class AcademicService {
       leaderboard: submissions.map((s) => ({
         userId: s.userId,
         userName: s.user?.name || 'Aluno',
-        score: s.totalScore,
+        score: Number(Number(s.totalScore ?? 0).toFixed(1)),
         totalCorrect: s.totalCorrect,
         isApproved: s.isApproved,
       })),
@@ -945,28 +1311,51 @@ export class AcademicService {
     };
   }
 
-  async getStudentGrades(userId: string) {
+  // ⚡ CONSULTA DO BOLETIM RESILIENTE
+  async getStudentGrades(userIdentifier: string) {
+    if (!userIdentifier) return [];
+
+    const cleanDoc = userIdentifier.replace(/\D/g, '').trim();
+    const matchedUsers = await (this.prisma.user as any).findMany({
+      where: {
+        OR: [
+          { id: userIdentifier },
+          ...(cleanDoc ? [{ document: cleanDoc }] : []),
+          { email: `${userIdentifier}@aluno.myclasspluss.com` },
+        ],
+      },
+      select: { id: true },
+    });
+
+    const userIds = matchedUsers.length > 0 ? matchedUsers.map((u: any) => u.id) : [userIdentifier];
+
     const submissions = await this.prisma.examSubmission.findMany({
-      where: { userId },
+      where: {
+        userId: { in: userIds },
+      },
       include: {
-        quiz: { include: { subject: true } },
-        class: { include: { course: true } },
+        quiz: {
+          include: { subject: true },
+        },
+        class: {
+          include: { course: true },
+        },
       },
       orderBy: { submittedAt: 'desc' },
     });
 
-    return submissions.map((sub) => ({
+    return submissions.map((sub: any) => ({
       id: sub.id,
-      quizTitle: sub.quiz.title,
-      subjectName: sub.quiz.subject?.name || 'Geral',
-      courseName: sub.class.course?.name || 'Geral',
-      classCode: sub.class.code,
+      quizTitle: sub.quiz?.title || 'Avaliação Oficial',
+      subjectName: sub.quiz?.subject?.name || 'Conhecimentos Gerais',
+      courseName: sub.class?.course?.name || 'Treinamento Técnico',
+      classCode: sub.class?.code || 'Avulsa / Sessão Aberta',
       date: new Date(sub.submittedAt).toLocaleDateString('pt-BR'),
-      totalCorrect: sub.totalCorrect,
-      totalQuestions: sub.totalQuestions,
-      speedScore: Math.round(sub.totalScore * 100),
-      finalGrade: sub.totalScore,
-      isApproved: sub.isApproved,
+      totalCorrect: Number(sub.totalCorrect ?? 0),
+      totalQuestions: Number(sub.totalQuestions ?? 0),
+      speedScore: Math.round(Number(sub.totalScore ?? 0) * 100),
+      finalGrade: Number(Number(sub.totalScore ?? 0).toFixed(1)),
+      isApproved: Boolean(sub.isApproved),
     }));
   }
 
@@ -1066,18 +1455,20 @@ export class AcademicService {
           },
           class: {
             id: sub.classId,
-            code: sub.class?.code || sub.classId.substring(0, 8).toUpperCase(),
+            code: sub.class?.code || (sub.classId ? sub.classId.substring(0, 8).toUpperCase() : 'AVULSO'),
           },
           answers: [],
         };
       }
 
+      const scoreNum = Number(Number(sub.totalScore ?? 0).toFixed(1));
+
       sessionsMap[key].answers.push({
         userId: sub.userId,
         userName: sub.user?.name || 'Aluno',
         isCorrect: sub.isApproved,
-        scoreEarned: sub.totalScore,
-        finalGrade: sub.totalScore,
+        scoreEarned: scoreNum,
+        finalGrade: scoreNum,
         timeSpentSeconds: sub.timeSpentSeconds,
         question: sub.answers?.[0]?.question || null,
       });
@@ -1114,8 +1505,10 @@ export class AcademicService {
 
   // ⚡ RELATÓRIO CONSOLIDADO DE FREQUÊNCIA DA TURMA
   async getConsolidatedAttendanceReport(classId: string) {
-    const classData = await this.prisma.class.findUnique({
-      where: { id: classId },
+    const classData = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
       include: {
         course: true,
         enrollments: {
@@ -1129,7 +1522,7 @@ export class AcademicService {
     }
 
     const allAttendances = await this.prisma.attendance.findMany({
-      where: { classId },
+      where: { classId: classData.id },
     });
 
     const uniqueClassDays = new Set(
@@ -1279,8 +1672,10 @@ export class AcademicService {
   }
 
   async listLessonsByClass(classId: string) {
-    const classData = await this.prisma.class.findUnique({
-      where: { id: classId },
+    const classData = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
       include: {
         modules: {
           select: { subjectId: true },
@@ -1295,7 +1690,7 @@ export class AcademicService {
     return this.prisma.lesson.findMany({
       where: {
         OR: [
-          { classId },
+          { classId: classData.id },
           { subjectId: { in: subjectIds } },
         ],
       },
@@ -1325,8 +1720,10 @@ export class AcademicService {
 
     let validClassId: string | null = null;
     if (data.classId && typeof data.classId === 'string' && data.classId.trim() !== '') {
-      const classExists = await this.prisma.class.findUnique({
-        where: { id: data.classId.trim() },
+      const classExists = await this.prisma.class.findFirst({
+        where: {
+          OR: [{ id: data.classId.trim() }, { code: data.classId.trim() }],
+        },
       });
       if (classExists) {
         validClassId = classExists.id;
@@ -1355,37 +1752,52 @@ export class AcademicService {
     });
   }
 
-  // ⚡ 1. Excluir todas as submissões de uma atividade específica de uma turma
+  // ⚡ Excluir todas as submissões de uma atividade específica de uma turma
   async deleteActivitySubmissionsFromClass(classId: string, quizId: string) {
-    // 1. Busca as submissões para pegar os IDs
+    const targetClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
+      select: { id: true, code: true },
+    });
+
+    const realClassId = targetClass?.id || classId;
+    const realClassCode = targetClass?.code || classId;
+
     const submissions = await this.prisma.examSubmission.findMany({
-      where: { classId, quizId },
+      where: {
+        quizId,
+        OR: [{ classId: realClassId }, { classId: realClassCode }],
+      },
       select: { id: true },
     });
 
     const subIds = submissions.map((s) => s.id);
 
-    // 2. Remove as respostas vinculadas a essas submissões (caso não tenha onDelete: Cascade)
     if (subIds.length > 0) {
       await (this.prisma as any).examAnswer?.deleteMany({
         where: { submissionId: { in: subIds } },
       }).catch(() => {});
 
-      // Remove as submissões
       await this.prisma.examSubmission.deleteMany({
         where: { id: { in: subIds } },
       });
     }
 
-    // 3. Remove também eventuais sessões de quiz gamificado da turma para esse quiz
     await (this.prisma as any).answer?.deleteMany({
       where: {
-        session: { classId, quizId },
+        session: {
+          quizId,
+          OR: [{ classId: realClassId }, { classId: realClassCode }],
+        },
       },
     }).catch(() => {});
 
     await (this.prisma as any).quizSession?.deleteMany({
-      where: { classId, quizId },
+      where: {
+        quizId,
+        OR: [{ classId: realClassId }, { classId: realClassCode }],
+      },
     }).catch(() => {});
 
     return {
@@ -1397,19 +1809,16 @@ export class AcademicService {
 
   // ⚡ Exclui uma tentativa específica (por submissionId ou por quizId)
   async deleteStudentSubmission(classId: string, activityIdentifier: string, userId: string) {
-    // 1. Tenta encontrar a submissão específica pelo próprio ID da submissão
     let submission = await this.prisma.examSubmission.findUnique({
       where: { id: activityIdentifier },
       select: { id: true, quizId: true },
     });
 
     if (submission) {
-      // Deleta as respostas vinculadas a essa submissão
       await (this.prisma as any).examAnswer?.deleteMany({
         where: { submissionId: submission.id },
       }).catch(() => {});
 
-      // Deleta apenas essa submissão específica
       await this.prisma.examSubmission.delete({
         where: { id: submission.id },
       });
@@ -1420,9 +1829,22 @@ export class AcademicService {
       };
     }
 
-    // 2. Se não encontrou por submissionId direto, busca a mais recente desse quizId para esse aluno
+    const targetClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [{ id: classId }, { code: classId }],
+      },
+      select: { id: true, code: true },
+    });
+
+    const realClassId = targetClass?.id || classId;
+    const realClassCode = targetClass?.code || classId;
+
     const latestSub = await this.prisma.examSubmission.findFirst({
-      where: { classId, quizId: activityIdentifier, userId },
+      where: {
+        quizId: activityIdentifier,
+        userId,
+        OR: [{ classId: realClassId }, { classId: realClassCode }],
+      },
       orderBy: { submittedAt: 'desc' },
       select: { id: true },
     });
@@ -1442,11 +1864,13 @@ export class AcademicService {
       };
     }
 
-    // 3. Limpa respostas de sessão em tempo real se ainda existirem
     await (this.prisma as any).answer?.deleteMany({
       where: {
         userId,
-        session: { classId, quizId: activityIdentifier },
+        session: {
+          quizId: activityIdentifier,
+          OR: [{ classId: realClassId }, { classId: realClassCode }],
+        },
       },
     }).catch(() => {});
 

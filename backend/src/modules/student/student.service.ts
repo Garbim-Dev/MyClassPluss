@@ -86,9 +86,9 @@ export class StudentService {
         sessionsMap.set(sessId, {
           sessionId: sessId,
           quizTitle: ans.session.quiz.title,
-          subjectName: ans.session.quiz.subject.name,
-          classCode: ans.session.class.code,
-          courseName: ans.session.class.course.name,
+          subjectName: ans.session.quiz?.subject?.name || 'Geral',
+          classCode: ans.session.class?.code || 'Turma Avulsa',
+          courseName: ans.session.class?.course?.name || 'Treinamento Técnico',
           date: ans.session.startedAt,
           totalQuestions,
           maxPointsPerQuestion: 10.0 / totalQuestions,

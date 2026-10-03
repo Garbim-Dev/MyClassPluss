@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../services/api';
 import { ClassStudentsModal } from './ClassStudentsModal';
 import { ClassAttendanceModal } from './ClassAttendanceModal';
 import { ClassReportModal } from './ClassReportModal';
+import { useFormAutoSave } from '../../hooks/useFormAutoSave';
 import { 
   GraduationCap, 
   Plus, 
@@ -64,7 +65,35 @@ export const ClassesManager: React.FC = () => {
   const [endDate, setEndDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Carrega dados iniciais (Instituições, Disciplinas, Ambientes Físicos/Salas)
+  // ⚡ Auto-Save configurado com os campos de criação de Turma
+  const { clearDraft } = useFormAutoSave(
+    '@MyClassPluss:draft_class_form',
+    {
+      classCode,
+      courseId,
+      subjectId,
+      roomName,
+      shift,
+      startTime,
+      endTime,
+      startDate,
+      endDate,
+    },
+    (saved) => {
+      if (saved.classCode) setClassCode(saved.classCode);
+      if (saved.courseId) setCourseId(saved.courseId);
+      if (saved.subjectId) setSubjectId(saved.subjectId);
+      if (saved.roomName) setRoomName(saved.roomName);
+      if (saved.shift) setShift(saved.shift);
+      if (saved.startTime) setStartTime(saved.startTime);
+      if (saved.endTime) setEndTime(saved.endTime);
+      if (saved.startDate) setStartDate(saved.startDate);
+      if (saved.endDate) setEndDate(saved.endDate);
+    },
+    Boolean(editingId)
+  );
+
+  // Carrega dados iniciais
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
@@ -88,30 +117,32 @@ export const ClassesManager: React.FC = () => {
     fetchInitialData();
   }, []);
 
-  // Carrega cursos e turmas da instituição selecionada
-  useEffect(() => {
+  // ⚡ Função reutilizável para recarregar as turmas e contadores atualizados
+  const fetchClassesData = useCallback(async () => {
     if (!selectedInstId) return;
-    const fetchInstitutionalData = async () => {
-      try {
-        setLoading(true);
-        const coursesRes = await api.get(`/academic/institutions/${selectedInstId}/courses`);
-        setCourses(coursesRes.data);
-        if (coursesRes.data.length > 0) {
-          setCourseId(coursesRes.data[0].id);
-        }
-
-        const classesRes = await api.get('/academic/classes');
-        const courseIds = coursesRes.data.map((c: any) => c.id);
-        const filtered = classesRes.data.filter((cls: any) => courseIds.includes(cls.courseId));
-        setClassesList(filtered);
-      } catch (err) {
-        setError('Erro ao carregar turmas.');
-      } finally {
-        setLoading(false);
+    try {
+      setLoading(true);
+      const coursesRes = await api.get(`/academic/institutions/${selectedInstId}/courses`);
+      setCourses(coursesRes.data);
+      if (coursesRes.data.length > 0 && !courseId) {
+        setCourseId(coursesRes.data[0].id);
       }
-    };
-    fetchInstitutionalData();
-  }, [selectedInstId]);
+
+      const classesRes = await api.get('/academic/classes');
+      const courseIds = coursesRes.data.map((c: any) => c.id);
+      const filtered = classesRes.data.filter((cls: any) => courseIds.includes(cls.courseId));
+      setClassesList(filtered);
+    } catch (err) {
+      setError('Erro ao carregar turmas.');
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedInstId, courseId]);
+
+  // Carrega quando a instituição for selecionada
+  useEffect(() => {
+    fetchClassesData();
+  }, [fetchClassesData]);
 
   const handleOpenCreateModal = () => {
     setEditingId(null);
@@ -146,12 +177,18 @@ export const ClassesManager: React.FC = () => {
     setIsModalOpen(true);
   };
 
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    clearDraft();
+    setEditingId(null);
+  };
+
   const handleOpenStudentsModal = (cls: any) => {
     setSelectedClassForStudents(cls);
     setIsStudentsModalOpen(true);
   };
 
-  // ⚡ Abre o Dossiê Oficial buscando as notas reais e atividades calculadas no backend
+  // ⚡ Dossiê Oficial
   const handleOpenReportModal = async (cls: any) => {
     setLoadingReportId(cls.id);
     setSelectedClassForReport(cls);
@@ -226,12 +263,10 @@ export const ClassesManager: React.FC = () => {
         setSuccessMsg('Turma criada com sucesso!');
       }
 
+      clearDraft();
       setIsModalOpen(false);
 
-      const coursesRes = await api.get(`/academic/institutions/${selectedInstId}/courses`);
-      const classesRes = await api.get('/academic/classes');
-      const courseIds = coursesRes.data.map((c: any) => c.id);
-      setClassesList(classesRes.data.filter((cls: any) => courseIds.includes(cls.courseId)));
+      await fetchClassesData();
 
       setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err: any) {
@@ -248,10 +283,7 @@ export const ClassesManager: React.FC = () => {
       await api.delete(`/academic/demands/${id}`);
       setSuccessMsg('Turma removida com sucesso!');
       
-      const coursesRes = await api.get(`/academic/institutions/${selectedInstId}/courses`);
-      const classesRes = await api.get('/academic/classes');
-      const courseIds = coursesRes.data.map((c: any) => c.id);
-      setClassesList(classesRes.data.filter((cls: any) => courseIds.includes(cls.courseId)));
+      await fetchClassesData();
 
       setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err) {
@@ -402,7 +434,7 @@ export const ClassesManager: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* ⚡ BOTÕES DE AÇÕES NO CARD: ALUNOS, CHAMADA E DOSSIÊ OFICIAL */}
+                  {/* BOTÕES DE AÇÕES NO CARD */}
                   <div className="grid grid-cols-3 gap-2 pt-2">
                     <button
                       onClick={() => handleOpenStudentsModal(cls)}
@@ -449,7 +481,7 @@ export const ClassesManager: React.FC = () => {
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl relative my-8">
             <button
               type="button"
-              onClick={() => setIsModalOpen(false)}
+              onClick={handleCloseModal}
               className="absolute top-5 right-5 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
             >
               <X className="w-5 h-5" />
@@ -621,7 +653,7 @@ export const ClassesManager: React.FC = () => {
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={handleCloseModal}
                   className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl text-xs transition-colors cursor-pointer border border-slate-700"
                 >
                   Cancelar
@@ -639,10 +671,15 @@ export const ClassesManager: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL DE GERENCIAMENTO DE ALUNOS */}
+      {/* ⚡ MODAL DE GERENCIAMENTO DE ALUNOS COM ATUALIZAÇÃO IMEDIATA DO CONTADOR */}
       <ClassStudentsModal
         isOpen={isStudentsModalOpen}
-        onClose={() => setIsStudentsModalOpen(false)}
+        onClose={() => {
+          setIsStudentsModalOpen(false);
+          fetchClassesData(); // ⚡ RECARREGA A LISTA DE TURMAS AO FECHAR
+        }}
+        onStudentEnrolled={() => fetchClassesData()} // ⚡ SE MATRICULAR UM NOVO ALUNO, ATUALIZA
+        onStudentRemoved={() => fetchClassesData()}  // ⚡ SE EXCLUIR UM ALUNO, ATUALIZA NA HORA
         classId={selectedClassForStudents?.id || null}
         classCode={selectedClassForStudents?.code || ''}
       />
@@ -658,9 +695,7 @@ export const ClassesManager: React.FC = () => {
         />
       )}
 
-      {/* ========================================================================= */}
-      {/* ⚡ MODAL DO DOSSIÊ OFICIAL E PRONTUÁRIOS (INTEGRADO DIRETAMENTE À TURMA)  */}
-      {/* ========================================================================= */}
+      {/* MODAL DO DOSSIÊ OFICIAL E PRONTUÁRIOS */}
       {selectedClassForReport && (
         <ClassReportModal
           isOpen={isReportModalOpen}

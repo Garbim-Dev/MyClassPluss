@@ -24,6 +24,7 @@ enum Shift {
 
 enum ActivityType {
   QUIZ_INTERATIVO
+  AVALIACAO
   AVALIAÇAO
   ATIVIDADE
 }
@@ -36,7 +37,7 @@ enum QuestionType {
   PUZZLE          // Quebra-Cabeça / Ordenação Sequencial
 }
 
-// ⚡ Status de Frequência do Aluno
+// Status de Frequência do Aluno
 enum AttendanceStatus {
   PRESENTE
   FALTA
@@ -48,30 +49,33 @@ enum AttendanceStatus {
 // --------------------------------------------------
 
 model User {
-  id                  String           @id @default(uuid())
-  name                String
-  email               String           @unique
-  passwordHash        String
-  role                Role             @default(ALUNO)
-  createdAt           DateTime         @default(now())
+  id                  String             @id @default(uuid())
+  name                String             // Nome Completo Oficial
+  nickname            String?            // Apelido / Nickname (usado no telão e na arena)
+  document            String?            @unique // CPF ou Matrícula (chave única de identificação)
+  email               String?            @unique // Opcional para alunos rápidos via PIN
+  passwordHash        String?            // Opcional para alunos rápidos via PIN
+  role                Role               @default(ALUNO)
+  createdAt           DateTime           @default(now())
   resetPasswordToken  String?
   resetPasswordExpire DateTime?
   
   enrollments         Enrollment[]
   studentAnswers      StudentAnswer[]
   examSubmissions     ExamSubmission[]
-  attendances         Attendance[]     // ⚡ Relação com as chamadas/frequências do aluno
+  attendances         Attendance[]       // Relação com as chamadas/frequências
 
   // Relações do Docente/Instrutor
-  createdInstitutions Institution[]    @relation("TeacherInstitutions")
-  createdClasses      Class[]          @relation("TeacherClasses")
-  createdQuizzes      Quiz[]           @relation("TeacherQuizzes")
-  personalQuestions   PersonalQuestion[] @relation("TeacherPersonalQuestions") // ⚡ Contraparte adicionada
+  createdInstitutions Institution[]      @relation("TeacherInstitutions")
+  createdClasses      Class[]            @relation("TeacherClasses")
+  createdQuizzes      Quiz[]             @relation("TeacherQuizzes")
+  personalQuestions   PersonalQuestion[] @relation("TeacherPersonalQuestions")
 
+  @@index([document])
   @@map("users")
 }
 
-// Módulo de Instituições de Ensino (Escolas, Senai, Empresas, etc.)
+// Módulo de Instituições de Ensino
 model Institution {
   id          String   @id @default(uuid())
   name        String
@@ -132,7 +136,7 @@ model Class {
   enrollments     Enrollment[]
   quizSessions    QuizSession[]
   examSubmissions ExamSubmission[]
-  attendances     Attendance[]     // ⚡ Relação com a frequência da turma
+  attendances     Attendance[]
 
   @@map("classes")
 }
@@ -189,12 +193,11 @@ model Enrollment {
   @@map("enrollments")
 }
 
-// ⚡ Tabela de Diário de Classe / Frequência
 model Attendance {
   id        String           @id @default(uuid())
   classId   String
   userId    String
-  date      DateTime         // Data da chamada (dia da aula)
+  date      DateTime         // Data da chamada
   status    AttendanceStatus @default(PRESENTE)
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
@@ -207,7 +210,7 @@ model Attendance {
 }
 
 // --------------------------------------------------
-// QUIZZES, ATIVIDADES E AVALIAÇÕES
+// QUIZZES, ATIVIDADES E AVALIAÇÕES DESACOPLADOS
 // --------------------------------------------------
 
 model Quiz {
@@ -217,13 +220,14 @@ model Quiz {
   type            ActivityType     @default(QUIZ_INTERATIVO)
   durationMinutes Int              @default(45)
 
-  // ⚡ Repositório Global de Questões
+  // Repositório Global de Questões
   isPublic        Boolean          @default(false)
-  knowledgeArea   String?          // Ex: "Segurança do Trabalho", "Mecânica Pesada", "Logística"
+  knowledgeArea   String?          // Ex: "Segurança do Trabalho", "Mecânica Pesada"
   tags            String[]         // Ex: ["nr-12", "inspecao", "diesel"]
 
-  subjectId       String
-  subject         Subject          @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  // Disciplina e Instrutor agora são opcionais para não travar a criação livre
+  subjectId       String?
+  subject         Subject?         @relation(fields: [subjectId], references: [id], onDelete: SetNull)
 
   teacherId       String?
   teacher         User?            @relation("TeacherQuizzes", fields: [teacherId], references: [id], onDelete: SetNull)
@@ -279,7 +283,6 @@ model QuestionOption {
   @@map("question_options")
 }
 
-// ⚡ BANCO DE QUESTÕES PESSOAL DO PROFESSOR (COM TAGS E FAVORITOS)
 model PersonalQuestion {
   id            String   @id @default(uuid())
   teacherId     String
@@ -302,13 +305,16 @@ model PersonalQuestion {
   @@map("personal_questions")
 }
 
+// Sessão Ativa por PIN (independente de turma prévia)
 model QuizSession {
   id        String          @id @default(uuid())
-  pinCode   String?         @unique
+  pinCode   String          @unique // PIN de 6 dígitos gerado ao vivo (ex: "482910")
   quizId    String
   quiz      Quiz            @relation(fields: [quizId], references: [id], onDelete: Cascade)
-  classId   String
-  class     Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+  
+  // Turma é opcional: pode ser vinculada durante a aula ou na consolidação posterior
+  classId   String?
+  class     Class?          @relation(fields: [classId], references: [id], onDelete: SetNull)
 
   isLive    Boolean         @default(true)
   startedAt DateTime        @default(now())
@@ -348,8 +354,10 @@ model ExamSubmission {
   quiz             Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
   userId           String
   user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  classId          String
-  class            Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
+  
+  // Turma opcional
+  classId          String?
+  class            Class?       @relation(fields: [classId], references: [id], onDelete: SetNull)
 
   totalScore       Float
   totalCorrect     Int

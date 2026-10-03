@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../../services/api';
 import { AiImportModal } from './AiImportModal';
 import { ExamPrintModal } from './ExamPrintModal';
@@ -27,6 +27,8 @@ import {
   Globe,
   Tag,
   Printer,
+  Filter,
+  BookOpen,
 } from 'lucide-react';
 
 type QuestionType = 'MULTIPLE_CHOICE' | 'TRUE_FALSE' | 'FAST_ANSWER' | 'SLIDER' | 'PUZZLE';
@@ -50,33 +52,129 @@ interface QuestionDraft {
   };
 }
 
+const DRAFT_KEY = '@MyClassPluss:draft_eval';
+const EDITING_ID_KEY = '@MyClassPluss:editing_eval_id';
+
+const createInitialQuestion = (id: string): QuestionDraft => ({
+  id,
+  title: '',
+  imageUrl: '',
+  type: 'MULTIPLE_CHOICE',
+  weight: 2.5,
+  justification: '',
+  options: [
+    { text: '', color: 'red', isCorrect: true, correctOrder: 0 },
+    { text: '', color: 'blue', isCorrect: false, correctOrder: 1 },
+    { text: '', color: 'yellow', isCorrect: false, correctOrder: 2 },
+    { text: '', color: 'green', isCorrect: false, correctOrder: 3 },
+  ],
+  tfCorrectIndex: 1,
+  shortAnswerKeywords: ['', '', ''],
+  sliderConfig: { min: 0, max: 100, target: 50, tolerance: 0, unit: 'bar' },
+});
+
 export const AvalManager: React.FC = () => {
+  const savedDraft = React.useMemo(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }, []);
+
   const [subjects, setSubjects] = useState<any[]>([]);
   const [evaluations, setEvaluations] = useState<any[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState('');
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>(() => {
+    return savedDraft?.selectedSubjectId || '';
+  });
+
+  // ⚡ Filtro da listagem de avaliações por disciplina
+  const [filterSubjectId, setFilterSubjectId] = useState<string>('ALL');
 
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
-  const [editingEvalId, setEditingEvalId] = useState<string | null>(null);
+  const [editingEvalId, setEditingEvalId] = useState<string | null>(() => {
+    return localStorage.getItem(EDITING_ID_KEY) || null;
+  });
 
   const [isQuestionBankOpen, setIsQuestionBankOpen] = useState(false);
 
-  // ⚡ Estados para Impressão de Provas Formais em PDF
   const [printExamData, setPrintExamData] = useState<any | null>(null);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
 
-  // ⚡ Estados para o Modal de Publicação no Repositório Global
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [quizToPublish, setQuizToPublish] = useState<any>(null);
   const [knowledgeArea, setKnowledgeArea] = useState('Segurança do Trabalho');
   const [tagsInput, setTagsInput] = useState('');
   const [publishing, setPublishing] = useState(false);
 
-  // Cabeçalho da Prova
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [durationMinutes, setDurationMinutes] = useState<number>(45);
+  const [title, setTitle] = useState<string>(() => savedDraft?.title || '');
+  const [description, setDescription] = useState<string>(() => savedDraft?.description || '');
+  const [durationMinutes, setDurationMinutes] = useState<number>(() => {
+    return Number(savedDraft?.durationMinutes) || 45;
+  });
 
-  // ⚡ Normalizador Dinâmico de Imagens para suportar variações de IP e portas
+  const [questions, setQuestions] = useState<QuestionDraft[]>(() => {
+    if (savedDraft?.questions && Array.isArray(savedDraft.questions) && savedDraft.questions.length > 0) {
+      return savedDraft.questions;
+    }
+    return [createInitialQuestion('1')];
+  });
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const saveStateToStorage = () => {
+    try {
+      const payload = {
+        title,
+        description,
+        selectedSubjectId,
+        durationMinutes,
+        questions,
+      };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(payload));
+      if (editingEvalId) {
+        localStorage.setItem(EDITING_ID_KEY, editingEvalId);
+      } else {
+        localStorage.removeItem(EDITING_ID_KEY);
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveStateToStorage();
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [title, description, selectedSubjectId, durationMinutes, questions, editingEvalId]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (window.document.visibilityState === 'hidden') {
+        saveStateToStorage();
+      }
+    };
+    const handleBeforeUnload = () => {
+      saveStateToStorage();
+    };
+
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [title, description, selectedSubjectId, durationMinutes, questions, editingEvalId]);
+
+  const clearFormDraft = () => {
+    try {
+      localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(EDITING_ID_KEY);
+    } catch (e) {}
+  };
+
   const formatImageUrl = (url?: string | null): string => {
     if (!url) return '';
     let target = url.trim();
@@ -94,28 +192,6 @@ export const AvalManager: React.FC = () => {
     return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
   };
 
-  const createInitialQuestion = (id: string): QuestionDraft => ({
-    id,
-    title: '',
-    imageUrl: '',
-    type: 'MULTIPLE_CHOICE',
-    weight: 2.5,
-    justification: '',
-    options: [
-      { text: '', color: 'red', isCorrect: true, correctOrder: 0 },
-      { text: '', color: 'blue', isCorrect: false, correctOrder: 1 },
-      { text: '', color: 'yellow', isCorrect: false, correctOrder: 2 },
-      { text: '', color: 'green', isCorrect: false, correctOrder: 3 },
-    ],
-    tfCorrectIndex: 1,
-    shortAnswerKeywords: ['', '', ''],
-    sliderConfig: { min: 0, max: 100, target: 50, tolerance: 0, unit: 'bar' },
-  });
-
-  const [questions, setQuestions] = useState<QuestionDraft[]>([createInitialQuestion('1')]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
   const fetchData = async () => {
     try {
       const [subRes, quizRes] = await Promise.all([
@@ -125,7 +201,6 @@ export const AvalManager: React.FC = () => {
       setSubjects(subRes.data || []);
       const allQuizzes = quizRes.data || [];
 
-      // Filtra apenas as avaliações formais aceitando variações de acentuação do Enum
       setEvaluations(
         allQuizzes.filter(
           (q: any) =>
@@ -148,6 +223,22 @@ export const AvalManager: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // ⚡ FILTRAGEM PRECISA DAS AVALIAÇÕES PELA DISCIPLINA SELECIONADA
+  const filteredEvaluations = useMemo(() => {
+    if (filterSubjectId === 'ALL') {
+      return evaluations;
+    }
+    return evaluations.filter(
+      (ev) => ev.subjectId === filterSubjectId || ev.subject?.id === filterSubjectId
+    );
+  }, [evaluations, filterSubjectId]);
+
+  const selectedFilterSubjectName = useMemo(() => {
+    if (filterSubjectId === 'ALL') return 'Todas as Disciplinas';
+    const found = subjects.find((s) => s.id === filterSubjectId);
+    return found?.name || 'Disciplina Selecionada';
+  }, [subjects, filterSubjectId]);
 
   const handleAddQuestion = () => {
     setQuestions([...questions, createInitialQuestion(Date.now().toString())]);
@@ -250,7 +341,6 @@ export const AvalManager: React.FC = () => {
       });
 
       if (res.data) {
-        // ⚡ Normaliza para salvar caminho relativo confiável (/uploads/filename.ext)
         const savedUrl = res.data.url || res.data.fileUrl || `/uploads/${res.data.filename}`;
         handleUpdateQuestion(qIndex, 'imageUrl', savedUrl);
       }
@@ -260,7 +350,6 @@ export const AvalManager: React.FC = () => {
     }
   };
 
-  // ⚡ Carrega detalhes e abre a impressão da prova em folha A4
   const handleOpenPrintPreview = async (ev: any) => {
     try {
       const res = await api.get(`/quizzes/${ev.id}`);
@@ -279,7 +368,6 @@ export const AvalManager: React.FC = () => {
     }
   };
 
-  // ⚡ Publicação no Repositório Global
   const handleOpenPublishModal = (ev: any) => {
     setQuizToPublish(ev);
     setKnowledgeArea(ev.knowledgeArea || 'Segurança do Trabalho');
@@ -393,6 +481,8 @@ export const AvalManager: React.FC = () => {
 
   const handleEditEval = (ev: any) => {
     setEditingEvalId(ev.id);
+    localStorage.setItem(EDITING_ID_KEY, ev.id);
+
     setTitle(ev.title);
     setDescription(ev.description || '');
     setDurationMinutes(Number(ev.durationMinutes) || 45);
@@ -467,6 +557,7 @@ export const AvalManager: React.FC = () => {
   };
 
   const handleCancelEdit = () => {
+    clearFormDraft();
     setEditingEvalId(null);
     setTitle('');
     setDescription('');
@@ -582,6 +673,7 @@ export const AvalManager: React.FC = () => {
         alert('Avaliação formal cadastrada com sucesso!');
       }
 
+      clearFormDraft();
       handleCancelEdit();
       await fetchData();
     } catch (err: any) {
@@ -767,7 +859,6 @@ export const AvalManager: React.FC = () => {
                   </span>
 
                   <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end flex-wrap">
-                    {/* TIPO */}
                     <div className="flex items-center gap-1.5">
                       <label className="text-xs font-bold text-slate-400">Tipo:</label>
                       <select
@@ -785,7 +876,6 @@ export const AvalManager: React.FC = () => {
                       </select>
                     </div>
 
-                    {/* PESO */}
                     <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-xl">
                       <span className="text-[10px] text-slate-400 font-bold">Peso:</span>
                       <input
@@ -829,7 +919,6 @@ export const AvalManager: React.FC = () => {
                   className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 p-3 rounded-xl text-white text-sm font-black focus:outline-none uppercase tracking-wide"
                 />
 
-                {/* IMAGEM COM NORMALIZADOR DINÂMICO E PREVENÇÃO DE ÍCONE QUEBRADO */}
                 <div className="p-3 bg-slate-900/60 border border-slate-800 border-dashed rounded-2xl flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <ImageIcon className="w-4 h-4 text-emerald-400" />
@@ -870,7 +959,6 @@ export const AvalManager: React.FC = () => {
                   )}
                 </div>
 
-                {/* MÚLTIPLA ESCOLHA */}
                 {q.type === 'MULTIPLE_CHOICE' && (
                   <div className="space-y-2 pt-1">
                     <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
@@ -907,7 +995,6 @@ export const AvalManager: React.FC = () => {
                   </div>
                 )}
 
-                {/* VERDADEIRO OU FALSO */}
                 {q.type === 'TRUE_FALSE' && (
                   <div className="space-y-2 pt-1">
                     <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
@@ -959,7 +1046,6 @@ export const AvalManager: React.FC = () => {
                   </div>
                 )}
 
-                {/* DIGITAÇÃO CURTA */}
                 {q.type === 'FAST_ANSWER' && (
                   <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-2xl space-y-3">
                     <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -1002,7 +1088,6 @@ export const AvalManager: React.FC = () => {
                   </div>
                 )}
 
-                {/* SLIDER NUMÉRICO */}
                 {q.type === 'SLIDER' && (
                   <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-2xl space-y-3">
                     <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -1075,7 +1160,6 @@ export const AvalManager: React.FC = () => {
                   </div>
                 )}
 
-                {/* PUZZLE / ORDENAÇÃO */}
                 {q.type === 'PUZZLE' && (
                   <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-2xl space-y-3">
                     <span className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -1118,7 +1202,7 @@ export const AvalManager: React.FC = () => {
                     placeholder="Explicação técnica do gabarito oficial..."
                     value={q.justification}
                     onChange={(e) => handleUpdateQuestion(qIdx, 'justification', e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 p-2.5 rounded-xl text-white text-xs focus:outline-none"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 p-2.5 rounded-xl text-white text-xs focus:outline-none"
                   />
                 </div>
               </div>
@@ -1156,92 +1240,144 @@ export const AvalManager: React.FC = () => {
         </form>
       </div>
 
-      {/* LISTAGEM DE AVALIAÇÕES FORMAIS CADASTRADAS */}
+      {/* ⚡ LISTAGEM DE AVALIAÇÕES FORMAIS CADASTRADAS COM FILTRO POR DISCIPLINA */}
       <div className="bg-slate-900/60 border border-slate-800/90 p-6 rounded-3xl space-y-4 shadow-xl backdrop-blur-md">
-        <h2 className="text-lg font-bold text-white flex items-center gap-2">
-          <Layers className="text-emerald-400 w-5 h-5" />
-          <span>Banco de Avaliações Formais Cadastradas</span>
-        </h2>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+          <div>
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <Layers className="text-emerald-400 w-5 h-5" />
+              <span>Banco de Avaliações Formais Cadastradas</span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Exibindo {filteredEvaluations.length} de {evaluations.length} avaliações formais cadastradas
+            </p>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {evaluations.map((ev) => (
-            <div
-              key={ev.id}
-              className={
-                'border p-4 rounded-2xl flex flex-col justify-between transition-all ' +
-                (editingEvalId === ev.id
-                  ? 'bg-amber-950/30 border-amber-500/80 ring-2 ring-amber-500/30'
-                  : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700')
-              }
+          {/* ⚡ SELETOR DE DISCIPLINA PARA FILTRAR AS AVALIAÇÕES */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Filter className="w-4 h-4 text-emerald-400 shrink-0" />
+            <select
+              value={filterSubjectId}
+              onChange={(e) => setFilterSubjectId(e.target.value)}
+              className="bg-slate-950 border border-slate-800 focus:border-emerald-500 text-xs text-slate-200 font-bold px-3 py-2 rounded-xl focus:outline-none w-full sm:w-64 cursor-pointer"
             >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full border bg-emerald-500/10 text-emerald-300 border-emerald-500/30 flex items-center gap-1">
-                    <FileCheck2 className="w-3 h-3" />
-                    <span>{ev.durationMinutes || 45} min</span>
-                  </span>
+              <option value="ALL">Todas as Disciplinas ({evaluations.length})</option>
+              {subjects.map((sub) => {
+                const count = evaluations.filter(
+                  (ev) => ev.subjectId === sub.id || ev.subject?.id === sub.id
+                ).length;
+                return (
+                  <option key={sub.id} value={sub.id}>
+                    {sub.name} ({count})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        </div>
 
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenPublishModal(ev)}
-                      className={`p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800 ${
-                        ev.isPublic ? 'text-teal-400 bg-teal-500/10' : 'text-slate-400 hover:text-teal-400'
-                      }`}
-                      title={ev.isPublic ? 'Remover do Repositório Global' : 'Publicar no Repositório Global'}
-                    >
-                      <Globe className="w-4 h-4" />
-                    </button>
+        {/* EMPTY STATE ESPECÍFICO QUANDO NÃO HÁ ITENS PARA A DISCIPLINA */}
+        {filteredEvaluations.length === 0 ? (
+          <div className="p-8 border border-dashed border-slate-800 rounded-3xl text-center space-y-2.5 bg-slate-950/40">
+            <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
+            <h4 className="text-sm font-bold text-slate-300">
+              Nenhuma Avaliação Formal cadastrada para {selectedFilterSubjectName}
+            </h4>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto">
+              Crie uma avaliação formal com pesos e gabarito preenchendo o formulário acima e selecionando esta disciplina vinculada.
+            </p>
+            {filterSubjectId !== 'ALL' && (
+              <button
+                type="button"
+                onClick={() => setFilterSubjectId('ALL')}
+                className="text-xs text-emerald-400 hover:text-emerald-300 underline font-bold cursor-pointer pt-1"
+              >
+                Ver todas as disciplinas
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredEvaluations.map((ev) => (
+              <div
+                key={ev.id}
+                className={
+                  'border p-4 rounded-2xl flex flex-col justify-between transition-all ' +
+                  (editingEvalId === ev.id
+                    ? 'bg-amber-950/30 border-amber-500/80 ring-2 ring-amber-500/30'
+                    : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700')
+                }
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full border bg-emerald-500/10 text-emerald-300 border-emerald-500/30 flex items-center gap-1">
+                      <FileCheck2 className="w-3 h-3" />
+                      <span>{ev.durationMinutes || 45} min</span>
+                    </span>
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenPrintPreview(ev);
-                      }}
-                      className="p-1.5 text-slate-400 hover:text-blue-400 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                      title="Imprimir Avaliação / Salvar em PDF"
-                    >
-                      <Printer className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenPublishModal(ev)}
+                        className={`p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800 ${
+                          ev.isPublic ? 'text-teal-400 bg-teal-500/10' : 'text-slate-400 hover:text-teal-400'
+                        }`}
+                        title={ev.isPublic ? 'Remover do Repositório Global' : 'Publicar no Repositório Global'}
+                      >
+                        <Globe className="w-4 h-4" />
+                      </button>
 
-                    <button
-                      type="button"
-                      onClick={() => handleEditEval(ev)}
-                      className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                      title="Editar avaliação"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteEval(ev.id)}
-                      className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                      title="Excluir avaliação"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenPrintPreview(ev);
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-blue-400 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                        title="Imprimir Avaliação / Salvar em PDF"
+                      >
+                        <Printer className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleEditEval(ev)}
+                        className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                        title="Editar avaliação"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEval(ev.id)}
+                        className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                        title="Excluir avaliação"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-bold text-white text-sm uppercase">{ev.title}</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      <span className="text-emerald-300 font-bold">{ev.subject?.name || 'Geral'}</span> •{' '}
+                      <strong className="text-emerald-400">{ev.questions?.length || 0} questões</strong>
+                    </p>
+                    {ev.isPublic && (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md mt-2 uppercase font-bold">
+                        <Globe className="w-3 h-3" /> Público ({ev.knowledgeArea || 'Geral'})
+                      </span>
+                    )}
                   </div>
                 </div>
-
-                <div>
-                  <h3 className="font-bold text-white text-sm uppercase">{ev.title}</h3>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {ev.subject?.name || 'Geral'} • <strong className="text-emerald-400">{ev.questions?.length || 0} questões</strong>
-                  </p>
-                  {ev.isPublic && (
-                    <span className="inline-flex items-center gap-1 text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md mt-2 uppercase font-bold">
-                      <Globe className="w-3 h-3" /> Público ({ev.knowledgeArea || 'Geral'})
-                    </span>
-                  )}
-                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* ⚡ MODAL DE PUBLICAÇÃO GLOBAL */}
+      {/* MODAL DE PUBLICAÇÃO GLOBAL */}
       {isPublishModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full space-y-5 shadow-2xl relative">

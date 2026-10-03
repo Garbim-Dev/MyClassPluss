@@ -249,8 +249,11 @@ export class AcademicController {
   }
 
   @Get('classes/:id/qrcode')
-  generateQrCode(@Param('id') id: string, @Query('serverIp') serverIp: string) {
-    return this.academicService.generateQrCode(id, serverIp);
+  async getClassQrCode(
+    @Param('id') classId: string,
+    @Query('serverIp') serverIp?: string,
+  ) {
+    return this.academicService.getClassQrCode(classId, serverIp);
   }
 
   @Post('evaluations/submit-exam')
@@ -406,4 +409,10 @@ export class AcademicController {
   ) {
     return this.academicService.deleteStudentSubmission(classId, quizId, userId);
   }
+
+  @Get('student-report/:userId')
+  async getStudentReport(@Param('userId') userId: string) {
+    return this.academicService.getStudentReport(userId);
+  }
+
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
+import { useFormAutoSave } from '../../hooks/useFormAutoSave';
 import {
   Clock,
   Send,
@@ -18,6 +19,7 @@ import {
   ChevronRight,
   HelpCircle,
   BookmarkCheck,
+  AlertCircle,
 } from 'lucide-react';
 
 interface FormalExamViewProps {
@@ -54,17 +56,67 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
 }) => {
   const navigate = useNavigate();
 
+  // ⚡ 1. Garante lista de questões disponível
+  const rawQuestions: any[] = React.useMemo(() => {
+    if (!quizData) return [];
+    if (Array.isArray(quizData.questions) && quizData.questions.length > 0) {
+      return quizData.questions;
+    }
+    return [];
+  }, [quizData]);
+
+  // ⚡ 2. DECLARAÇÃO DE TODOS OS ESTADOS PRIMEIRO (Evita TDZ)
   const [currentIdx, setCurrentIdx] = useState<number>(0);
   const [answers, setAnswers] = useState<{ [questionId: string]: any }>({});
   const [timeLeft, setTimeLeft] = useState((durationMinutes || 45) * 60);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [feedbackResult, setFeedbackResult] = useState<any | null>(null);
+  const [feedbackResult, setFeedbackResult] = useState<any | null>(null); // <-- Declarado aqui no topo!
+
+  const [showAlreadyDoneModal, setShowAlreadyDoneModal] = useState(false);
 
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [blankQuestionIndexes, setBlankQuestionIndexes] = useState<number[]>([]);
 
   const [puzzleStates, setPuzzleStates] = useState<{ [questionId: string]: any[] }>({});
-  const [orderedQuestions, setOrderedQuestions] = useState<any[]>([]);
+  const [orderedQuestions, setOrderedQuestions] = useState<any[]>(() => rawQuestions);
+
+  // ⚡ 3. Chave de bloqueio e persistência
+  const completedStorageKey = `@MyClassPluss:exam_completed_${quizData?.id}_${studentUser?.id}`;
+  const examStorageKey = `@MyClassPluss:student_exam_${quizData?.id}_${studentUser?.id}`;
+
+  // ⚡ Trava visual e elegante de avaliação já finalizada
+  useEffect(() => {
+    try {
+      const isCompleted = localStorage.getItem(completedStorageKey) === 'true';
+      if (isCompleted && !feedbackResult) {
+        setShowAlreadyDoneModal(true);
+        // Retorna automaticamente após 4 segundos se o aluno não clicar
+        const timer = setTimeout(() => {
+          if (onReturnToLobby) onReturnToLobby();
+          else navigate('/student/portal', { replace: true });
+        }, 4000);
+        return () => clearTimeout(timer);
+      }
+    } catch (e) {}
+  }, [completedStorageKey, onReturnToLobby, navigate, feedbackResult]);
+
+  // ⚡ 5. AutoSave Universal
+  const { clearDraft } = useFormAutoSave(
+    examStorageKey,
+    { answers, currentIdx, timeLeft },
+    (saved) => {
+      if (saved.answers && typeof saved.answers === 'object') {
+        setAnswers(saved.answers);
+      }
+      if (typeof saved.currentIdx === 'number') {
+        setCurrentIdx(saved.currentIdx);
+      }
+      if (typeof saved.timeLeft === 'number' && saved.timeLeft > 0) {
+        setTimeLeft(saved.timeLeft);
+      }
+    },
+    Boolean(feedbackResult)
+  );
 
   const formatImageUrl = (url?: string | null): string => {
     if (!url) return '';
@@ -100,14 +152,12 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     };
   }, [feedbackResult, navigate, onReturnToLobby]);
 
-  // ⚡ Inicialização com Embaralhamento Individual e Persistente por Aluno
+  // ⚡ Inicialização com Embaralhamento Individual e Persistente
   useEffect(() => {
-    if (!quizData || !quizData.questions) return;
+    if (!rawQuestions || rawQuestions.length === 0) return;
 
-    const questionsCacheKey = `@MyClassPluss:exam_questions_${quizData.id}_${studentUser?.id}`;
-    const answersCacheKey = `@MyClassPluss:exam_cache_${quizData.id}`;
-
-    const cachedQuestions = sessionStorage.getItem(questionsCacheKey);
+    const questionsCacheKey = `@MyClassPluss:exam_questions_${quizData?.id}_${studentUser?.id}`;
+    const cachedQuestions = localStorage.getItem(questionsCacheKey);
     let finalQuestions: any[] = [];
 
     if (cachedQuestions) {
@@ -118,8 +168,8 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
       }
     }
 
-    if (finalQuestions.length === 0) {
-      const clonedQuestions = quizData.questions.map((q: any) => {
+    if (finalQuestions.length === 0 || finalQuestions.length !== rawQuestions.length) {
+      const clonedQuestions = rawQuestions.map((q: any) => {
         if (q.type === 'MULTIPLE_CHOICE' && q.options && q.options.length > 1) {
           return {
             ...q,
@@ -130,21 +180,14 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
       });
 
       finalQuestions = shuffleArray(clonedQuestions);
-      sessionStorage.setItem(questionsCacheKey, JSON.stringify(finalQuestions));
+      try {
+        localStorage.setItem(questionsCacheKey, JSON.stringify(finalQuestions));
+      } catch (e) {}
     }
 
     setOrderedQuestions(finalQuestions);
 
-    const savedAnswers = sessionStorage.getItem(answersCacheKey);
-    let initialAnswers: { [qId: string]: any } = {};
-
-    if (savedAnswers) {
-      try {
-        initialAnswers = JSON.parse(savedAnswers);
-        setAnswers(initialAnswers);
-      } catch (e) {}
-    }
-
+    // Inicialização dos Puzzles
     const initialPuzzles: { [qId: string]: any[] } = {};
 
     finalQuestions.forEach((q: any) => {
@@ -155,28 +198,26 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
           correctOrder: opt.correctOrder !== undefined && opt.correctOrder !== null ? Number(opt.correctOrder) : idx,
         }));
 
-        if (initialAnswers[q.id] && Array.isArray(initialAnswers[q.id])) {
-          const cachedIds = initialAnswers[q.id];
+        if (answers[q.id] && Array.isArray(answers[q.id])) {
+          const cachedIds = answers[q.id];
           const restored = cachedIds
             .map((val: any) => mapped.find((m: any) => m.id === val || m.correctOrder === val || m.text === val))
             .filter(Boolean);
           initialPuzzles[q.id] = restored.length === mapped.length ? restored : shuffleArray(mapped);
         } else {
-          const shuffled = shuffleArray(mapped);
-          initialPuzzles[q.id] = shuffled;
-          initialAnswers[q.id] = shuffled.map((item) => item.id);
+          initialPuzzles[q.id] = shuffleArray(mapped);
         }
       }
     });
 
     setPuzzleStates(initialPuzzles);
-    setAnswers(initialAnswers);
-  }, [quizData, studentUser]);
+  }, [rawQuestions, quizData?.id, studentUser?.id]);
 
   const handleSelectAnswer = (questionId: string, value: any) => {
-    const updated = { ...answers, [questionId]: value };
-    setAnswers(updated);
-    sessionStorage.setItem(`@MyClassPluss:exam_cache_${quizData?.id}`, JSON.stringify(updated));
+    setAnswers((prev) => ({
+      ...prev,
+      [questionId]: value,
+    }));
   };
 
   const handleMovePuzzleItem = (questionId: string, index: number, direction: 'up' | 'down') => {
@@ -206,23 +247,26 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     return () => clearInterval(timer);
   }, [timeLeft, feedbackResult]);
 
-  const currentQuestionList = orderedQuestions.length > 0 ? orderedQuestions : quizData.questions || [];
+  // Lista de questões resolvida
+  const currentQuestionList = orderedQuestions.length > 0 ? orderedQuestions : rawQuestions;
+  const totalQuestionsCount = currentQuestionList.length;
 
-  const isQuestionAnswered = (q: any): boolean => {
-    if (!q) return false;
-    const val = answers[q.id];
+  const isQuestionAnswered = (qItem: any): boolean => {
+    if (!qItem) return false;
+    const val = answers[qItem.id];
     if (val === undefined || val === null || val === '') return false;
-    if (q.type === 'FAST_ANSWER' && String(val).trim() === '') return false;
+    if (qItem.type === 'FAST_ANSWER' && String(val).trim() === '') return false;
     return true;
   };
 
   const answeredCount = currentQuestionList.filter(isQuestionAnswered).length;
+  const isLastQuestion = totalQuestionsCount > 0 && currentIdx === totalQuestionsCount - 1;
 
   const handlePreSubmit = () => {
     const blanks: number[] = [];
 
-    currentQuestionList.forEach((q: any, idx: number) => {
-      if (!isQuestionAnswered(q)) {
+    currentQuestionList.forEach((qItem: any, idx: number) => {
+      if (!isQuestionAnswered(qItem)) {
         blanks.push(idx + 1);
       }
     });
@@ -241,15 +285,14 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
     setIsSubmitting(true);
 
     try {
-      const questionsToSubmit = currentQuestionList;
-      const formattedAnswers = questionsToSubmit.map((q: any) => {
-        let val = answers[q.id];
-        if (q.type === 'PUZZLE' && (!val || !Array.isArray(val))) {
-          val = (puzzleStates[q.id] || q.options || []).map((item: any) => item.id);
+      const formattedAnswers = currentQuestionList.map((qItem: any) => {
+        let val = answers[qItem.id];
+        if (qItem.type === 'PUZZLE' && (!val || !Array.isArray(val))) {
+          val = (puzzleStates[qItem.id] || qItem.options || []).map((item: any) => item.id);
         }
 
         return {
-          questionId: q.id,
+          questionId: qItem.id,
           answerValue: val !== undefined ? val : '',
         };
       });
@@ -257,7 +300,7 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
       const payload = {
         quizId: quizData.id,
         userId: studentUser.id,
-        classId,
+        classId: classId || undefined,
         timeSpentSeconds: (durationMinutes || 45) * 60 - timeLeft,
         answers: formattedAnswers,
       };
@@ -265,12 +308,25 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
       const res = await api.post('/academic/evaluations/submit-exam', payload);
       setFeedbackResult(res.data);
 
-      sessionStorage.removeItem(`@MyClassPluss:exam_cache_${quizData?.id}`);
-      sessionStorage.removeItem(`@MyClassPluss:exam_questions_${quizData?.id}_${studentUser?.id}`);
+      // ⚡ Grava trava permanente para não permitir 2ª tentativa
+      try {
+        localStorage.setItem(completedStorageKey, 'true');
+      } catch (e) {}
+
+      clearDraft();
+      try {
+        localStorage.removeItem(`@MyClassPluss:exam_questions_${quizData?.id}_${studentUser?.id}`);
+      } catch (e) {}
 
       if (onFinishExam) onFinishExam(res.data);
     } catch (err: any) {
-      alert('Erro ao enviar avaliação: ' + (err.response?.data?.message || 'Tente novamente.'));
+      const msg = err.response?.data?.message || 'Tente novamente.';
+      if (msg.includes('já foi entregue') || msg.includes('já possui cadastro')) {
+        try {
+          localStorage.setItem(completedStorageKey, 'true');
+        } catch (e) {}
+      }
+      alert('Aviso na entrega da avaliação: ' + msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -339,12 +395,11 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
             <button
               type="button"
               onClick={() => {
-                sessionStorage.removeItem(`@MyClassPluss:exam_cache_${quizData?.id}`);
-                sessionStorage.removeItem(`@MyClassPluss:exam_questions_${quizData?.id}_${studentUser?.id}`);
+                clearDraft();
                 if (onReturnToLobby) {
                   onReturnToLobby();
                 } else {
-                  navigate(`/join?classId=${classId}`, { replace: true });
+                  navigate(`/student/join?classId=${classId}`, { replace: true });
                 }
               }}
               className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 py-3.5 rounded-2xl text-xs font-black text-slate-300 flex items-center justify-center gap-2 cursor-pointer transition-colors uppercase tracking-wider"
@@ -424,11 +479,11 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
             <div className="flex items-center gap-2">
               <FileCheck2 className="w-5 h-5 text-emerald-400 shrink-0" />
               <h2 className="text-sm sm:text-base font-black text-white uppercase tracking-wider truncate">
-                {quizData.title}
+                {quizData?.title || 'Avaliação Oficial'}
               </h2>
             </div>
             <span className="text-xs text-slate-400 uppercase font-bold tracking-wide block truncate">
-              Aluno: <strong className="text-white">{studentUser.name}</strong>
+              Aluno: <strong className="text-white">{studentUser?.name}</strong>
             </span>
           </div>
 
@@ -446,12 +501,12 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
           </div>
         </header>
 
-        {/* ⚡ RÉGUA DE NAVEGAÇÃO LIVRE DAS QUESTÕES (ESTILO GABARITO EM PAPEL) */}
+        {/* ⚡ RÉGUA DE NAVEGAÇÃO LIVRE DAS QUESTÕES */}
         <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-3xl shadow-xl space-y-2">
           <div className="flex items-center justify-between text-[11px] font-bold text-slate-400 px-1">
             <span className="flex items-center gap-1.5 uppercase tracking-wider">
               <BookmarkCheck className="w-3.5 h-3.5 text-blue-400" />
-              <span>Mapa de Questões ({answeredCount}/{currentQuestionList.length} respondidas)</span>
+              <span>Mapa de Questões ({answeredCount}/{totalQuestionsCount} respondidas)</span>
             </span>
             <span className="text-slate-500">Toque no número para saltar</span>
           </div>
@@ -487,12 +542,12 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
         </div>
 
         {/* CARD DA QUESTÃO ATIVA */}
-        {q && (
+        {q ? (
           <div className="bg-slate-900/90 border border-slate-800 p-5 sm:p-7 rounded-3xl space-y-5 shadow-2xl animate-fade-in relative">
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
               <div className="flex items-center gap-2">
                 <span className="text-xs sm:text-sm font-black text-emerald-400 uppercase tracking-widest">
-                  Questão {currentIdx + 1} de {currentQuestionList.length}
+                  Questão {currentIdx + 1} de {totalQuestionsCount}
                 </span>
                 {isCurrentAnswered ? (
                   <span className="text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">
@@ -647,6 +702,7 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
                     type="range"
                     min={min}
                     max={max}
+                    step={conf.step || 1}
                     value={val}
                     onChange={(e) => handleSelectAnswer(q.id, Number(e.target.value))}
                     className="w-full h-2 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-emerald-500"
@@ -655,46 +711,63 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
               );
             })()}
           </div>
+        ) : (
+          <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl text-center space-y-3">
+            <AlertCircle className="w-10 h-10 text-amber-400 mx-auto" />
+            <h3 className="text-base font-bold text-white">Carregando questões da avaliação...</h3>
+            <p className="text-xs text-slate-400">Aguarde um momento enquanto os itens são organizados.</p>
+          </div>
         )}
 
-        {/* ⚡ CONTROLES DE NAVEGAÇÃO: ANTERIOR, PULAR E PRÓXIMA */}
+        {/* ⚡ CONTROLES DE NAVEGAÇÃO REORGANIZADOS E TOTALMENTE FUNCIONAIS */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+          {/* Botão Anterior */}
           <button
             type="button"
             disabled={currentIdx === 0}
             onClick={() => setCurrentIdx((prev) => Math.max(0, prev - 1))}
-            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-slate-200 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-slate-200 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors active:scale-95"
           >
             <ChevronLeft className="w-4 h-4" />
             <span>Anterior</span>
           </button>
 
+          {/* Botão Pular Questão */}
           <button
             type="button"
-            disabled={currentIdx + 1 >= currentQuestionList.length}
-            onClick={() => setCurrentIdx((prev) => Math.min(currentQuestionList.length - 1, prev + 1))}
-            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-amber-400 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            onClick={() => {
+              if (totalQuestionsCount > 1) {
+                setCurrentIdx((prev) => (prev + 1) % totalQuestionsCount);
+              }
+            }}
+            className="bg-slate-900 hover:bg-slate-800 border border-slate-800 text-amber-400 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors active:scale-95"
             title="Avança para a próxima deixando esta questão para responder mais tarde"
           >
             <HelpCircle className="w-4 h-4 text-amber-400" />
             <span>Pular Questão</span>
           </button>
 
+          {/* Botão Próxima */}
           <button
             type="button"
-            disabled={currentIdx + 1 >= currentQuestionList.length}
-            onClick={() => setCurrentIdx((prev) => Math.min(currentQuestionList.length - 1, prev + 1))}
-            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-slate-200 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+            disabled={isLastQuestion}
+            onClick={() => setCurrentIdx((prev) => Math.min(totalQuestionsCount - 1, prev + 1))}
+            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 border border-slate-800 text-slate-200 font-bold py-3.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors active:scale-95"
           >
             <span>Próxima</span>
             <ChevronRight className="w-4 h-4" />
           </button>
 
+          {/* Botão Entregar Prova */}
           <button
             type="button"
             disabled={isSubmitting}
             onClick={handlePreSubmit}
-            className="col-span-2 sm:col-span-1 bg-emerald-600 hover:bg-emerald-500 font-black py-3.5 rounded-2xl text-white shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5 cursor-pointer transition-transform active:scale-95 text-xs disabled:opacity-50 uppercase tracking-wider"
+            className={`font-black py-3.5 rounded-2xl text-white shadow-lg flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95 text-xs disabled:opacity-50 uppercase tracking-wider ${
+              isLastQuestion || answeredCount === totalQuestionsCount
+                ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/40 ring-2 ring-emerald-400/50'
+                : 'bg-emerald-800/80 hover:bg-emerald-700 shadow-emerald-900/30'
+            }`}
           >
             <Send className="w-4 h-4" />
             <span>Entregar Prova</span>
@@ -726,7 +799,7 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
                       setCurrentIdx(num - 1);
                       setShowConfirmModal(false);
                     }}
-                    className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-mono font-bold hover:bg-amber-500 hover:text-slate-950 transition-colors"
+                    className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-mono font-bold hover:bg-amber-500 hover:text-slate-950 transition-colors cursor-pointer"
                     title={`Ir direto para a questão ${num}`}
                   >
                     {num}
@@ -757,6 +830,51 @@ export const FormalExamView: React.FC<FormalExamViewProps> = ({
               >
                 <Send className="w-4 h-4" />
                 <span>Entregar Assim Mesmo</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ⚡ MODAL ELEGANTE: AVALIAÇÃO JÁ ENTREGUE */}
+      {showAlreadyDoneModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-fade-in font-sans">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full text-center space-y-5 shadow-2xl">
+            <div className="w-16 h-16 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-center mx-auto text-emerald-400">
+              <CheckCircle2 className="w-9 h-9 animate-bounce" />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-black text-white uppercase tracking-wide">
+                Avaliação Concluída!
+              </h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Suas respostas já foram enviadas e computadas com sucesso no sistema.
+              </p>
+              <span className="text-[11px] text-slate-500 block pt-1">
+                Não é permitida uma segunda tentativa para este exame.
+              </span>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (onReturnToLobby) onReturnToLobby();
+                  else navigate(`/student/join?classId=${classId}`, { replace: true });
+                }}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-emerald-600/30 transition-transform active:scale-95 cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Radio className="w-4 h-4" />
+                <span>Voltar ao Lobby da Sala</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigate('/student/portal', { replace: true })}
+                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl text-xs uppercase tracking-wider transition-colors cursor-pointer flex items-center justify-center gap-2 border border-slate-700"
+              >
+                <GraduationCap className="w-4 h-4 text-blue-400" />
+                <span>Ver Meu Boletim</span>
               </button>
             </div>
           </div>

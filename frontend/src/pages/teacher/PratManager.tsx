@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../../services/api';
 import { AiImportModal } from './AiImportModal';
+import { useFormAutoSave } from '../../hooks/useFormAutoSave';
 import {
   Wrench,
   PlusCircle,
@@ -25,6 +26,8 @@ import {
   Gauge,
   ListOrdered,
   AlertTriangle,
+  Filter,
+  BookOpen,
 } from 'lucide-react';
 
 type StepType = 'CHECKLIST' | 'SLIDER' | 'PUZZLE' | 'FAST_ANSWER';
@@ -54,6 +57,9 @@ export const PratManager: React.FC = () => {
   const [practices, setPractices] = useState<any[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
 
+  // ⚡ Filtro exclusivo da listagem de procedimentos práticos por disciplina
+  const [filterSubjectId, setFilterSubjectId] = useState<string>('ALL');
+
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
   const [editingPratId, setEditingPratId] = useState<string | null>(null);
 
@@ -63,24 +69,6 @@ export const PratManager: React.FC = () => {
   const [environment, setEnvironment] = useState<'OFICINA' | 'CAMPO' | 'SIMULADOR' | 'SALA_AULA'>('OFICINA');
   const [isTeamMode, setIsTeamMode] = useState(false);
   const [durationMinutes, setDurationMinutes] = useState<number>(60);
-
-  // ⚡ Normalizador Dinâmico de Imagens para suportar variações de IP e portas
-  const formatImageUrl = (url?: string | null): string => {
-    if (!url) return '';
-    let target = url.trim();
-
-    if (target.startsWith('http://') || target.startsWith('https://')) {
-      try {
-        const parsed = new URL(target);
-        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
-      } catch (e) {
-        return encodeURI(target);
-      }
-    }
-
-    const slash = target.startsWith('/') ? '' : '/';
-    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
-  };
 
   const createInitialStep = (id: string, stepNumber = 1): PracticalStepDraft => ({
     id,
@@ -102,6 +90,38 @@ export const PratManager: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // ⚡ Auto-Save Universal adaptado para os estados de Prática Operacional
+  const { clearDraft } = useFormAutoSave(
+    '@MyClassPluss:draft_practice',
+    { title, description, selectedSubjectId, durationMinutes, isTeamMode, steps },
+    (saved) => {
+      if (saved.title) setTitle(saved.title);
+      if (saved.description) setDescription(saved.description);
+      if (saved.selectedSubjectId) setSelectedSubjectId(saved.selectedSubjectId);
+      if (saved.durationMinutes) setDurationMinutes(Number(saved.durationMinutes));
+      if (saved.isTeamMode !== undefined) setIsTeamMode(Boolean(saved.isTeamMode));
+      if (saved.steps && saved.steps.length > 0) setSteps(saved.steps);
+    },
+    Boolean(editingPratId)
+  );
+
+  const formatImageUrl = (url?: string | null): string => {
+    if (!url) return '';
+    let target = url.trim();
+
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      try {
+        const parsed = new URL(target);
+        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
+      } catch (e) {
+        return encodeURI(target);
+      }
+    }
+
+    const slash = target.startsWith('/') ? '' : '/';
+    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
+  };
+
   const fetchData = async () => {
     try {
       const [subRes, quizRes] = await Promise.all([
@@ -110,7 +130,6 @@ export const PratManager: React.FC = () => {
       ]);
       setSubjects(subRes.data || []);
       const allList = quizRes.data || [];
-      // Filtra apenas práticas operacionais de campo/oficina
       setPractices(allList.filter((q: any) => q.type === 'ATIVIDADE'));
 
       if (subRes.data?.length > 0 && !selectedSubjectId) {
@@ -124,6 +143,22 @@ export const PratManager: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // ⚡ FILTRAGEM PRECISA DOS ROTEIROS PELA DISCIPLINA SELECIONADA
+  const filteredPractices = useMemo(() => {
+    if (filterSubjectId === 'ALL') {
+      return practices;
+    }
+    return practices.filter(
+      (p) => p.subjectId === filterSubjectId || p.subject?.id === filterSubjectId
+    );
+  }, [practices, filterSubjectId]);
+
+  const selectedFilterSubjectName = useMemo(() => {
+    if (filterSubjectId === 'ALL') return 'Todas as Disciplinas';
+    const found = subjects.find((s) => s.id === filterSubjectId);
+    return found?.name || 'Disciplina Selecionada';
+  }, [subjects, filterSubjectId]);
 
   const handleAddStep = () => {
     setSteps([...steps, createInitialStep(Date.now().toString(), steps.length + 1)]);
@@ -141,7 +176,6 @@ export const PratManager: React.FC = () => {
     const updated = [...steps];
     (updated[index] as any)[field] = value;
 
-    // ⚡ Se o tipo mudou para PUZZLE, garante que o array de opções tenha exatamente 4 posições editáveis
     if (field === 'type' && value === 'PUZZLE') {
       const currentOpts = updated[index].options || [];
       while (currentOpts.length < 4) {
@@ -178,7 +212,6 @@ export const PratManager: React.FC = () => {
     setSteps(updated);
   };
 
-  // ⚡ Upload físico padronizado direto para a pasta do backend
   const handleImageUpload = async (sIndex: number, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -312,6 +345,7 @@ export const PratManager: React.FC = () => {
   };
 
   const handleCancelEdit = () => {
+    clearDraft();
     setEditingPratId(null);
     setTitle('');
     setDescription('');
@@ -400,6 +434,7 @@ export const PratManager: React.FC = () => {
         alert('Roteiro prático cadastrado com sucesso!');
       }
 
+      clearDraft();
       handleCancelEdit();
       await fetchData();
     } catch (err: any) {
@@ -650,7 +685,7 @@ export const PratManager: React.FC = () => {
                   className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 p-3 rounded-xl text-white text-sm font-black focus:outline-none uppercase tracking-wide"
                 />
 
-                {/* IMAGEM DO EQUIPAMENTO COM NORMALIZADOR DINÂMICO E PROTEÇÃO ONERROR */}
+                {/* IMAGEM DO EQUIPAMENTO */}
                 <div className="p-3 bg-slate-900/60 border border-slate-800 border-dashed rounded-2xl flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <ImageIcon className="w-4 h-4 text-amber-400" />
@@ -684,7 +719,7 @@ export const PratManager: React.FC = () => {
                   )}
                 </div>
 
-                {/* SLIDER DE MEDIÇÃO TÉCNICA (PRESSÃO/TORQUE/NÍVEL) */}
+                {/* SLIDER DE MEDIÇÃO TÉCNICA */}
                 {s.type === 'SLIDER' && (
                   <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-2xl space-y-3">
                     <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -781,7 +816,7 @@ export const PratManager: React.FC = () => {
                     placeholder="Especifique a referência técnica (ex: NR-12, NR-22, manual do fabricante ou POP-04)..."
                     value={s.technicalStandard}
                     onChange={(e) => handleUpdateStep(sIdx, 'technicalStandard', e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 p-2.5 rounded-xl text-white text-xs focus:outline-none uppercase"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 p-2.5 rounded-xl text-white text-xs focus:outline-none uppercase"
                   />
                 </div>
               </div>
@@ -819,61 +854,113 @@ export const PratManager: React.FC = () => {
         </form>
       </div>
 
-      {/* LISTAGEM DE PROCEDIMENTOS PRÁTICOS CADASTRADOS */}
+      {/* ⚡ LISTAGEM DE PROCEDIMENTOS PRÁTICOS CADASTRADOS COM FILTRO POR DISCIPLINA */}
       <div className="bg-slate-900/60 border border-slate-800/90 p-6 rounded-3xl space-y-4 shadow-xl backdrop-blur-md">
-        <h2 className="text-lg font-bold text-white flex items-center gap-2">
-          <Layers className="text-amber-400 w-5 h-5" />
-          <span>Banco de Procedimentos Práticos Cadastrados</span>
-        </h2>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+          <div>
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <Layers className="text-amber-400 w-5 h-5" />
+              <span>Banco de Procedimentos Práticos Cadastrados</span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Exibindo {filteredPractices.length} de {practices.length} roteiros operacionais cadastrados
+            </p>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {practices.map((prat) => (
-            <div
-              key={prat.id}
-              className={
-                'border p-4 rounded-2xl flex flex-col justify-between transition-all ' +
-                (editingPratId === prat.id
-                  ? 'bg-amber-950/30 border-amber-500/80 ring-2 ring-amber-500/30'
-                  : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700')
-              }
+          {/* ⚡ SELETOR DE DISCIPLINA PARA FILTRAR OS PROCEDIMENTOS PRÁTICOS */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Filter className="w-4 h-4 text-amber-400 shrink-0" />
+            <select
+              value={filterSubjectId}
+              onChange={(e) => setFilterSubjectId(e.target.value)}
+              className="bg-slate-950 border border-slate-800 focus:border-amber-500 text-xs text-slate-200 font-bold px-3 py-2 rounded-xl focus:outline-none w-full sm:w-64 cursor-pointer"
             >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full border bg-amber-500/10 text-amber-300 border-amber-500/30 flex items-center gap-1">
-                    <Wrench className="w-3 h-3" />
-                    <span>{prat.durationMinutes || 60} min</span>
-                  </span>
+              <option value="ALL">Todas as Disciplinas ({practices.length})</option>
+              {subjects.map((sub) => {
+                const count = practices.filter(
+                  (prat) => prat.subjectId === sub.id || prat.subject?.id === sub.id
+                ).length;
+                return (
+                  <option key={sub.id} value={sub.id}>
+                    {sub.name} ({count})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        </div>
 
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleEditPractice(prat)}
-                      className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                      title="Editar roteiro"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeletePractice(prat.id)}
-                      className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                      title="Excluir roteiro"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+        {/* EMPTY STATE ESPECÍFICO QUANDO NÃO HÁ ITENS PARA A DISCIPLINA */}
+        {filteredPractices.length === 0 ? (
+          <div className="p-8 border border-dashed border-slate-800 rounded-3xl text-center space-y-2.5 bg-slate-950/40">
+            <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
+            <h4 className="text-sm font-bold text-slate-300">
+              Nenhum Procedimento Prático cadastrado para {selectedFilterSubjectName}
+            </h4>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto">
+              Crie um novo checklist ou roteiro de campo preenchendo o formulário acima e selecionando esta disciplina vinculada.
+            </p>
+            {filterSubjectId !== 'ALL' && (
+              <button
+                type="button"
+                onClick={() => setFilterSubjectId('ALL')}
+                className="text-xs text-amber-400 hover:text-amber-300 underline font-bold cursor-pointer pt-1"
+              >
+                Ver todas as disciplinas
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredPractices.map((prat) => (
+              <div
+                key={prat.id}
+                className={
+                  'border p-4 rounded-2xl flex flex-col justify-between transition-all ' +
+                  (editingPratId === prat.id
+                    ? 'bg-amber-950/30 border-amber-500/80 ring-2 ring-amber-500/30'
+                    : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700')
+                }
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full border bg-amber-500/10 text-amber-300 border-amber-500/30 flex items-center gap-1">
+                      <Wrench className="w-3 h-3" />
+                      <span>{prat.durationMinutes || 60} min</span>
+                    </span>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleEditPractice(prat)}
+                        className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                        title="Editar roteiro"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePractice(prat.id)}
+                        className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                        title="Excluir roteiro"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="font-bold text-white text-sm uppercase">{prat.title}</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      <span className="text-amber-300 font-bold">{prat.subject?.name || 'Geral'}</span> •{' '}
+                      <strong className="text-amber-400">{prat.questions?.length || 0} etapas</strong>
+                    </p>
                   </div>
                 </div>
-
-                <div>
-                  <h3 className="font-bold text-white text-sm uppercase">{prat.title}</h3>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {prat.subject?.name || 'Geral'} • <strong className="text-amber-400">{prat.questions?.length || 0} etapas</strong>
-                  </p>
-                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <AiImportModal

@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../../services/api';
 import { AiImportModal } from './AiImportModal';
 import { AvalManager } from './AvalManager';
 import { PratManager } from './PratManager';
 import { ExamPrintModal } from './ExamPrintModal';
 import { PersonalQuestionBankModal } from './PersonalQuestionBankModal';
+import { useFormAutoSave } from '../../hooks/useFormAutoSave';
 import {
   BookmarkCheck,
   BookmarkPlus,
@@ -28,7 +29,9 @@ import {
   Shield,
   HelpCircle,
   Globe,
-  Printer
+  Printer,
+  Filter,
+  BookOpen,
 } from 'lucide-react';
 
 type QuestionType = 'MULTIPLE_CHOICE' | 'TRUE_FALSE' | 'FAST_ANSWER' | 'SLIDER' | 'PUZZLE';
@@ -63,9 +66,12 @@ export const QuizManager: React.FC = () => {
   const [quizzes, setQuizzes] = useState<any[]>([]);
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
 
+  // ⚡ Filtro exclusivo para a listagem de quizzes por disciplina
+  const [filterSubjectId, setFilterSubjectId] = useState<string>('ALL');
+
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
 
-  // ⚡ Estados para o Modal de Publicação no Repositório Global
+  // Estados para o Modal de Publicação no Repositório Global
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [quizToPublish, setQuizToPublish] = useState<any>(null);
   const [knowledgeArea, setKnowledgeArea] = useState('Segurança do Trabalho');
@@ -78,24 +84,6 @@ export const QuizManager: React.FC = () => {
 
   const [printExamData, setPrintExamData] = useState<any | null>(null);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
-
-  // ⚡ Normaliza dinamicamente a URL da imagem para o IP e porta atuais do backend (:3000)
-  const formatImageUrl = (url?: string | null): string => {
-    if (!url) return '';
-    let target = url.trim();
-
-    if (target.startsWith('http://') || target.startsWith('https://')) {
-      try {
-        const parsed = new URL(target);
-        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
-      } catch (e) {
-        return encodeURI(target);
-      }
-    }
-
-    const slash = target.startsWith('/') ? '' : '/';
-    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
-  };
 
   const createInitialQuestion = (id: string): QuestionDraft => ({
     id,
@@ -119,6 +107,37 @@ export const QuizManager: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const { clearDraft } = useFormAutoSave(
+    '@MyClassPluss:draft_quiz',
+    { title, description, selectedSubjectId, questions },
+    (saved) => {
+      if (saved.title) setTitle(saved.title);
+      if (saved.description) setDescription(saved.description);
+      if (saved.selectedSubjectId) setSelectedSubjectId(saved.selectedSubjectId);
+      if (saved.questions && Array.isArray(saved.questions) && saved.questions.length > 0) {
+        setQuestions(saved.questions);
+      }
+    },
+    Boolean(editingQuizId)
+  );
+
+  const formatImageUrl = (url?: string | null): string => {
+    if (!url) return '';
+    let target = url.trim();
+
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      try {
+        const parsed = new URL(target);
+        return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${parsed.pathname}${parsed.search}`);
+      } catch (e) {
+        return encodeURI(target);
+      }
+    }
+
+    const slash = target.startsWith('/') ? '' : '/';
+    return encodeURI(`${window.location.protocol}//${window.location.hostname}:3000${slash}${target}`);
+  };
+
   const fetchData = async () => {
     try {
       const [subRes, quizRes] = await Promise.all([
@@ -139,6 +158,22 @@ export const QuizManager: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // ⚡ FILTRAGEM PRECISA DOS QUIZZES PELA DISCIPLINA SELECIONADA
+  const filteredQuizzes = useMemo(() => {
+    if (filterSubjectId === 'ALL') {
+      return quizzes;
+    }
+    return quizzes.filter(
+      (q) => q.subjectId === filterSubjectId || q.subject?.id === filterSubjectId
+    );
+  }, [quizzes, filterSubjectId]);
+
+  const selectedFilterSubjectName = useMemo(() => {
+    if (filterSubjectId === 'ALL') return 'Todas as Disciplinas';
+    const found = subjects.find((s) => s.id === filterSubjectId);
+    return found?.name || 'Disciplina Selecionada';
+  }, [subjects, filterSubjectId]);
 
   const handleAddQuestion = () => {
     setQuestions([...questions, createInitialQuestion(Date.now().toString())]);
@@ -185,7 +220,7 @@ export const QuizManager: React.FC = () => {
       imageUrl: savedQ.imageUrl || '',
       type: savedQ.type || 'MULTIPLE_CHOICE',
       timeLimitSeconds: Number(savedQ.timeLimitSeconds) || 30,
-      weight: Number(savedQ.weight) || 2.5,
+      weight: 2.5,
       justification: savedQ.justification || '',
       options: savedQ.options && savedQ.options.length > 0 ? savedQ.options : [
         { text: '', color: 'red', isCorrect: true, correctOrder: 0 },
@@ -260,7 +295,6 @@ export const QuizManager: React.FC = () => {
       });
 
       if (res.data) {
-        // ⚡ Salva o caminho relativo confiável para resolução dinâmica
         const savedUrl = res.data.url || res.data.fileUrl || `/uploads/${res.data.filename}`;
         handleUpdateQuestion(qIndex, 'imageUrl', savedUrl);
       }
@@ -270,7 +304,6 @@ export const QuizManager: React.FC = () => {
     }
   };
 
-  // ⚡ Funções de Publicação no Repositório Global
   const handleOpenPublishModal = (quiz: any) => {
     setQuizToPublish(quiz);
     setKnowledgeArea(quiz.knowledgeArea || 'Segurança do Trabalho');
@@ -449,6 +482,7 @@ export const QuizManager: React.FC = () => {
   };
 
   const handleCancelEdit = () => {
+    clearDraft();
     setEditingQuizId(null);
     setTitle('');
     setDescription('');
@@ -1129,93 +1163,143 @@ export const QuizManager: React.FC = () => {
             </div>
           </form>
 
-          {/* LISTAGEM DE QUIZZES GAMIFICADOS */}
+          {/* ⚡ LISTAGEM DE QUIZZES GAMIFICADOS COM FILTRO POR DISCIPLINA */}
           <div className="pt-6 border-t border-slate-800/80 space-y-4">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <Layers className="text-purple-400 w-4 h-4" />
-              <span>Quizzes Interativos Cadastrados</span>
-            </h3>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Layers className="text-purple-400 w-4 h-4" />
+                  <span>Quizzes Interativos Cadastrados</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Exibindo {filteredQuizzes.length} de {quizzes.length} quizzes cadastrados
+                </p>
+              </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {quizzes.map((q) => (
-                <div
-                  key={q.id}
-                  className={
-                    'border p-4 rounded-2xl flex flex-col justify-between transition-all ' +
-                    (editingQuizId === q.id
-                      ? 'bg-amber-950/30 border-amber-500/80 ring-2 ring-amber-500/30'
-                      : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700')
-                  }
+              {/* ⚡ FILTRO RÁPIDO DE DISCIPLINA NA LISTAGEM */}
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Filter className="w-4 h-4 text-purple-400 shrink-0" />
+                <select
+                  value={filterSubjectId}
+                  onChange={(e) => setFilterSubjectId(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 focus:border-purple-500 text-xs text-slate-200 font-bold px-3 py-2 rounded-xl focus:outline-none w-full sm:w-64 cursor-pointer"
                 >
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full border bg-purple-500/10 text-purple-300 border-purple-500/30">
-                        Quiz Gamificado
-                      </span>
+                  <option value="ALL">Todas as Disciplinas ({quizzes.length})</option>
+                  {subjects.map((sub) => {
+                    const count = quizzes.filter((q) => q.subjectId === sub.id || q.subject?.id === sub.id).length;
+                    return (
+                      <option key={sub.id} value={sub.id}>
+                        {sub.name} ({count})
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            </div>
 
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenPublishModal(q)}
-                          className={`p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800 ${
-                            q.isPublic ? 'text-teal-400 bg-teal-500/10' : 'text-slate-400 hover:text-teal-400'
-                          }`}
-                          title={q.isPublic ? 'Remover do Repositório Global' : 'Publicar no Repositório Global'}
-                        >
-                          <Globe className="w-4 h-4" />
-                        </button>
+            {/* SE NÃO HOUVER NENHUM ITEM PARA A DISCIPLINA FILTRADA */}
+            {filteredQuizzes.length === 0 ? (
+              <div className="p-8 border border-dashed border-slate-800 rounded-3xl text-center space-y-2.5 bg-slate-950/40">
+                <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
+                <h4 className="text-sm font-bold text-slate-300">
+                  Nenhum Quiz cadastrado para {selectedFilterSubjectName}
+                </h4>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                  Crie um novo quiz interativo preenchendo o formulário acima e selecionando esta disciplina vinculada.
+                </p>
+                {filterSubjectId !== 'ALL' && (
+                  <button
+                    type="button"
+                    onClick={() => setFilterSubjectId('ALL')}
+                    className="text-xs text-purple-400 hover:text-purple-300 underline font-bold cursor-pointer pt-1"
+                  >
+                    Ver todas as disciplinas
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredQuizzes.map((q) => (
+                  <div
+                    key={q.id}
+                    className={
+                      'border p-4 rounded-2xl flex flex-col justify-between transition-all ' +
+                      (editingQuizId === q.id
+                        ? 'bg-amber-950/30 border-amber-500/80 ring-2 ring-amber-500/30'
+                        : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700')
+                    }
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full border bg-purple-500/10 text-purple-300 border-purple-500/30">
+                          Quiz Gamificado
+                        </span>
 
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenPrintPreview(q);
-                          }}
-                          className="p-1.5 text-slate-400 hover:text-blue-400 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                          title="Imprimir Avaliação / Salvar em PDF"
-                        >
-                          <Printer className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenPublishModal(q)}
+                            className={`p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800 ${
+                              q.isPublic ? 'text-teal-400 bg-teal-500/10' : 'text-slate-400 hover:text-teal-400'
+                            }`}
+                            title={q.isPublic ? 'Remover do Repositório Global' : 'Publicar no Repositório Global'}
+                          >
+                            <Globe className="w-4 h-4" />
+                          </button>
 
-                        <button
-                          type="button"
-                          onClick={() => handleEditQuiz(q)}
-                          className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                          title="Editar atividade"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteQuiz(q.id)}
-                          className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
-                          title="Excluir atividade"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenPrintPreview(q);
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-blue-400 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                            title="Imprimir Avaliação / Salvar em PDF"
+                          >
+                            <Printer className="w-4 h-4" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleEditQuiz(q)}
+                            className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                            title="Editar atividade"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteQuiz(q.id)}
+                            className="text-slate-500 hover:text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer hover:bg-slate-800"
+                            title="Excluir atividade"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <h3 className="font-bold text-white text-sm">{q.title}</h3>
+                        <p className="text-xs text-slate-400 mt-1">
+                          <span className="text-purple-300 font-bold">{q.subject?.name || 'Geral'}</span> •{' '}
+                          <strong className="text-purple-400">{q.questions?.length || 0} itens</strong>
+                        </p>
+                        {q.isPublic && (
+                          <span className="inline-flex items-center gap-1 text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md mt-2">
+                            <Globe className="w-3 h-3" /> Público ({q.knowledgeArea || 'Geral'})
+                          </span>
+                        )}
                       </div>
                     </div>
-
-                    <div>
-                      <h3 className="font-bold text-white text-sm">{q.title}</h3>
-                      <p className="text-xs text-slate-400 mt-1">
-                        {q.subject?.name || 'Geral'} • <strong className="text-purple-400">{q.questions?.length || 0} itens</strong>
-                      </p>
-                      {q.isPublic && (
-                        <span className="inline-flex items-center gap-1 text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-md mt-2">
-                          <Globe className="w-3 h-3" /> Público ({q.knowledgeArea || 'Geral'})
-                        </span>
-                      )}
-                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* ⚡ MODAL DE PUBLICAÇÃO GLOBAL */}
+      {/* MODAL DE PUBLICAÇÃO GLOBAL */}
       {isPublishModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full space-y-5 shadow-2xl relative">

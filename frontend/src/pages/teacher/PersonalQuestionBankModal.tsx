@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../services/api';
+import { useFormAutoSave } from '../../hooks/useFormAutoSave';
 import {
   BookmarkCheck,
   Star,
@@ -44,6 +45,17 @@ export const PersonalQuestionBankModal: React.FC<PersonalQuestionBankModalProps>
   const [search, setSearch] = useState('');
   const [selectedTag, setSelectedTag] = useState<string>('');
   const [onlyFavorites, setOnlyFavorites] = useState(false);
+
+  // ⚡ Persistência automática dos parâmetros de busca e filtros do acervo
+  useFormAutoSave(
+    '@MyClassPluss:draft_question_bank_filters',
+    { search, selectedTag, onlyFavorites },
+    (saved) => {
+      if (saved.search !== undefined) setSearch(saved.search);
+      if (saved.selectedTag !== undefined) setSelectedTag(saved.selectedTag);
+      if (saved.onlyFavorites !== undefined) setOnlyFavorites(Boolean(saved.onlyFavorites));
+    }
+  );
 
   useEffect(() => {
     if (isOpen) {
@@ -159,7 +171,7 @@ export const PersonalQuestionBankModal: React.FC<PersonalQuestionBankModalProps>
               <button
                 type="button"
                 onClick={() => setSelectedTag('')}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors shrink-0 ${
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors shrink-0 cursor-pointer ${
                   selectedTag === ''
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
@@ -172,9 +184,9 @@ export const PersonalQuestionBankModal: React.FC<PersonalQuestionBankModalProps>
                   key={tag}
                   type="button"
                   onClick={() => setSelectedTag(tag === selectedTag ? '' : tag)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors shrink-0 ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors shrink-0 cursor-pointer ${
                     selectedTag === tag
-                      ? 'bg-amber-500 text-slate-950'
+                      ? 'bg-amber-500 text-slate-950 font-black'
                       : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
                   }`}
                 >

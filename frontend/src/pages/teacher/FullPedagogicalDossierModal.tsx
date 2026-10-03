@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { ExportService } from '../../services/exportService';
 import {
   FileText,
@@ -17,17 +17,21 @@ import {
   FileSpreadsheet,
   BarChart3,
   AlertTriangle,
+  Search,
+  Filter,
 } from 'lucide-react';
 
 interface StudentDossierItem {
   rank: number;
   userId: string;
   userName: string;
+  document?: string;
   teamName?: string | null;
   teamColor?: string | null;
   score?: number;
   roundScore?: number;
   totalGrade?: number;
+  finalGrade?: number;
   isApproved: boolean;
   totalCorrect?: number;
   answersMatrix?: { [questionIndex: number]: boolean };
@@ -52,6 +56,7 @@ interface FullPedagogicalDossierModalProps {
   classCode: string;
   subjectName: string;
   totalQuestions: number;
+  instructorName?: string;
   leaderboard: StudentDossierItem[];
   questionsHeatmap?: QuestionHeatmapItem[];
 }
@@ -65,23 +70,54 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
   classCode,
   subjectName,
   totalQuestions = 1,
+  instructorName,
   leaderboard = [],
   questionsHeatmap: externalHeatmap,
 }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'APPROVED' | 'FAILED'>('ALL');
+
+  // Recupera o nome do instrutor conectado se não vier por props
+  const resolvedInstructor = useMemo(() => {
+    if (instructorName && instructorName.trim() !== '') return instructorName;
+    try {
+      const stored = localStorage.getItem('@MyClassPluss:user');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.name) return parsed.name;
+      }
+    } catch (e) {}
+    return 'Instrutor Responsável';
+  }, [instructorName]);
+
   if (!isOpen) return null;
 
+  // ⚡ Extrai nota normalizada [0.0, 10.0] de cada estudante
+  const getNormalizedGrade = (s: StudentDossierItem): number => {
+    if (s.totalGrade !== undefined && s.totalGrade !== null) {
+      return Number(Number(s.totalGrade).toFixed(1));
+    }
+    if (s.finalGrade !== undefined && s.finalGrade !== null) {
+      return Number(Number(s.finalGrade).toFixed(1));
+    }
+    if (s.totalCorrect !== undefined && totalQuestions > 0) {
+      return Number(((s.totalCorrect / totalQuestions) * 10.0).toFixed(1));
+    }
+    return 0.0;
+  };
+
   const totalStudents = leaderboard.length;
-  const approvedCount = leaderboard.filter((s) => s.isApproved).length;
+  const approvedCount = leaderboard.filter((s) => Boolean(s.isApproved)).length;
   const approvalRate = totalStudents > 0 ? ((approvedCount / totalStudents) * 100).toFixed(1) : '0.0';
 
   const averageGrade =
     totalStudents > 0
       ? (
-          leaderboard.reduce((acc, s) => acc + Number(s.totalGrade ?? 0), 0) / totalStudents
+          leaderboard.reduce((acc, s) => acc + getNormalizedGrade(s), 0) / totalStudents
         ).toFixed(1)
       : '0.0';
 
-  // ⚡ GERAÇÃO/CONSOLIDAÇÃO DA MATRIZ DE CALOR PEDAGÓGICA
+  // ⚡ MATRIZ DE CALOR PEDAGÓGICA CONSOLIDADA
   const computedHeatmap = useMemo(() => {
     if (externalHeatmap && externalHeatmap.length > 0) {
       return externalHeatmap;
@@ -131,10 +167,27 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
     return items;
   }, [externalHeatmap, leaderboard, totalQuestions, totalStudents]);
 
-  // Contadores analíticos para o sumário da Coordenação
+  // Contadores analíticos
   const criticalCount = computedHeatmap.filter((q) => q.difficultyLevel === 'HARD').length;
   const attentionCount = computedHeatmap.filter((q) => q.difficultyLevel === 'MEDIUM').length;
   const masteredCount = computedHeatmap.filter((q) => q.difficultyLevel === 'EASY').length;
+
+  // ⚡ Filtragem dinâmica por busca e status
+  const filteredLeaderboard = useMemo(() => {
+    return leaderboard.filter((s) => {
+      const matchesSearch =
+        s.userName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (s.document && s.document.includes(searchTerm)) ||
+        (s.teamName && s.teamName.toLowerCase().includes(searchTerm.toLowerCase()));
+
+      const matchesStatus =
+        statusFilter === 'ALL' ||
+        (statusFilter === 'APPROVED' && s.isApproved) ||
+        (statusFilter === 'FAILED' && !s.isApproved);
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [leaderboard, searchTerm, statusFilter]);
 
   const handlePrint = () => {
     window.print();
@@ -146,12 +199,14 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
       return;
     }
 
-    const headers = ['Posição', 'Nome do Aluno', 'Equipe', 'Nota Final (0-10)', 'Situação'];
+    const headers = ['Posição', 'Nome do Aluno', 'CPF/Matrícula', 'Equipe', 'Acertos', 'Nota Final (0-10)', 'Situação'];
     const rows = leaderboard.map((s) => [
       s.rank,
       `"${s.userName}"`,
+      `"${s.document || 'N/A'}"`,
       `"${s.teamName || 'Sem Equipe'}"`,
-      Number(s.totalGrade ?? 0).toFixed(1),
+      s.totalCorrect !== undefined ? `${s.totalCorrect}/${totalQuestions}` : 'N/A',
+      getNormalizedGrade(s).toFixed(1),
       s.isApproved ? 'Aprovado' : 'Abaixo da Média',
     ]);
 
@@ -170,6 +225,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
   const getModalityBadge = () => {
     switch (quizType) {
       case 'AVALIACAO':
+      case 'AVALIAÇAO':
         return {
           title: 'Atividade Formal',
           description: 'Avaliação Individual com Nota Oficial (0 a 10)',
@@ -202,7 +258,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
   const modality = getModalityBadge();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in font-sans">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-fade-in font-sans">
       <div className="bg-[#0b1120] border border-slate-800 rounded-3xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-slate-100">
         
         {/* CABEÇALHO */}
@@ -219,7 +275,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Relatório consolidado com matriz de acertos, pontuações de velocidade e mapa de calor
+                Instrutor: <strong className="text-slate-200">{resolvedInstructor}</strong> • Relatório oficial consolidado
               </p>
             </div>
           </div>
@@ -262,7 +318,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                   subjectName,
                   totalQuestions,
                   students: leaderboard,
-                  instructorName: 'Sidnei Garbim da Silva', // Ou o nome do instrutor logado
+                  instructorName: resolvedInstructor,
                 })
               }
               className="px-3.5 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-red-600/30 flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -292,7 +348,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
           </div>
         </div>
 
-        {/* CORPO DO MODAL COM ROLAGEM ÚNICA */}
+        {/* CORPO DO MODAL COM ROLAGEM */}
         <div className="flex-1 overflow-y-auto space-y-6 p-6">
           {/* CARDS DE INFORMAÇÕES GERAIS */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
@@ -348,9 +404,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
             </div>
           </div>
 
-          {/* ========================================================= */}
-          {/* ⚡ MAPA DE CALOR PEDAGÓGICO / MATRIZ DE DIFICULDADE       */}
-          {/* ========================================================= */}
+          {/* MATRIZ DE DIFICULDADE PEDAGÓGICA */}
           <div className="bg-[#090e1a] border border-slate-800 p-5 rounded-3xl space-y-4 shadow-xl">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
@@ -364,7 +418,6 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
               </span>
             </div>
 
-            {/* CARDS TOTALIZADORES DO DIAGNÓSTICO */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="p-3.5 bg-emerald-950/30 border border-emerald-500/30 rounded-2xl flex items-center justify-between">
                 <div>
@@ -400,7 +453,6 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
               </div>
             </div>
 
-            {/* GRADE DO MAPA DE CALOR COM BARRAS PROPORCIONAIS */}
             <div className="border border-slate-800 rounded-2xl overflow-hidden">
               <table className="w-full text-left text-xs text-slate-300 border-collapse">
                 <thead>
@@ -460,19 +512,35 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
             </div>
           </div>
 
-          {/* TABELA CONSOLIDADA COM MATRIZ DE ACERTOS POR ALUNO */}
+          {/* TABELA DE RENDIMENTO INDIVIDUAL */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                Quadro de Rendimento por Participante
+                Quadro de Rendimento por Participante ({filteredLeaderboard.length} exibidos)
               </h3>
-              <div className="flex items-center gap-3 text-[11px] font-bold">
-                <span className="flex items-center gap-1 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Acerto
-                </span>
-                <span className="flex items-center gap-1 text-red-400">
-                  <XCircle className="w-3.5 h-3.5" /> Erro
-                </span>
+              
+              {/* FILTROS E BUSCA */}
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="relative flex-1 sm:w-64">
+                  <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Buscar por nome ou CPF..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value as any)}
+                  className="bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500 cursor-pointer font-bold"
+                >
+                  <option value="ALL">Todas Situações</option>
+                  <option value="APPROVED">✓ Aprovados (≥ 7,0)</option>
+                  <option value="FAILED">✗ Abaixo de 7,0</option>
+                </select>
               </div>
             </div>
 
@@ -483,6 +551,7 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                     <tr>
                       <th className="py-3 px-4 w-12 text-center">Pos.</th>
                       <th className="py-3 px-4">Nome do Aluno</th>
+                      <th className="py-3 px-3">CPF / Matrícula</th>
                       <th className="py-3 px-4">Equipe</th>
                       {Array.from({ length: totalQuestions }).map((_, qIdx) => (
                         <th key={qIdx} className="py-3 px-2 text-center w-10">
@@ -495,19 +564,17 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {leaderboard.length === 0 ? (
+                    {filteredLeaderboard.length === 0 ? (
                       <tr>
-                        <td colSpan={6 + totalQuestions} className="py-12 text-center text-slate-500 italic">
-                          Nenhum resultado registrado para esta sessão.
+                        <td colSpan={7 + totalQuestions} className="py-12 text-center text-slate-500 italic">
+                          Nenhum resultado registrado ou encontrado com os filtros atuais.
                         </td>
                       </tr>
                     ) : (
-                      leaderboard.map((student, sIdx) => {
+                      filteredLeaderboard.map((student, sIdx) => {
                         const matrix = student.answersMatrix || student.answersMap || {};
                         const isApproved = Boolean(student.isApproved);
-                        const finalGrade = Number(
-                          student.totalGrade ?? (student.score ? (student.score / 1000) * 10 : 0)
-                        ).toFixed(1);
+                        const finalGrade = getNormalizedGrade(student).toFixed(1);
 
                         return (
                           <tr key={student.userId || sIdx} className="hover:bg-slate-800/40 transition-colors">
@@ -516,6 +583,9 @@ export const FullPedagogicalDossierModal: React.FC<FullPedagogicalDossierModalPr
                             </td>
                             <td className="py-3.5 px-4 font-bold text-white whitespace-nowrap">
                               {student.userName}
+                            </td>
+                            <td className="py-3.5 px-3 font-mono text-[11px] text-slate-400 whitespace-nowrap">
+                              {student.document || '—'}
                             </td>
                             <td className="py-3.5 px-4">
                               {student.teamName ? (

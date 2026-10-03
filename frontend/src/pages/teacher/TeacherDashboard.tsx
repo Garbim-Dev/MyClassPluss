@@ -331,23 +331,39 @@ export const TeacherDashboard: React.FC = () => {
       setIsExamMonitorOpen(true);
 
       const socket = getSocket();
-      socket.emit('launch_formal_exam', {
-        classId: activeClassId,
-        quizId: target.id,
-        quizType: 'AVALIAÇAO',
-        quizTitle: target.title,
-        durationMinutes: Number(target.durationMinutes) || 45,
-        totalQuestions: target.questions.length,
-        questions: target.questions.map((item: any, idx: number) => ({
-          id: item.id || `q_${idx}`,
-          title: item.title,
-          type: item.type,
-          weight: Number(item.weight) || 1.0,
-          imageUrl: item.imageUrl || null,
-          sliderConfig: item.sliderConfig || null,
-          options: item.options || [],
+
+      const questionsPayload = (target.questions || []).map((item: any, idx: number) => ({
+        id: String(item.id || `q_${idx + 1}`),
+        title: item.title || `Questão ${idx + 1}`,
+        type: item.type || 'MULTIPLE_CHOICE',
+        weight: Number(item.weight) || 1.0,
+        imageUrl: item.imageUrl || null,
+        justification: item.justification || '',
+        sliderConfig: item.sliderConfig || null,
+        options: (item.options || []).map((opt: any, oIdx: number) => ({
+          id: String(opt.id || `opt_${idx}_${oIdx}`),
+          text: opt.text || '',
+          color: opt.color || (['red', 'blue', 'yellow', 'green'][oIdx % 4]),
+          isCorrect: Boolean(opt.isCorrect),
+          correctOrder: opt.correctOrder !== undefined ? Number(opt.correctOrder) : oIdx,
         })),
-      });
+      }));
+
+      const examPayload = {
+        classId: activeClassId,
+        quizId: String(target.id),
+        id: String(target.id),
+        quizType: 'AVALIACAO', // ⚡ Padronizado sem acentos para coincidir com o StudentJoin
+        type: 'AVALIACAO',
+        quizTitle: target.title || 'Avaliação Oficial',
+        title: target.title || 'Avaliação Oficial',
+        durationMinutes: Number(target.durationMinutes) || 45,
+        totalQuestions: questionsPayload.length,
+        questions: questionsPayload,
+      };
+
+      // Dispara o lançamento formal para a turma
+      socket.emit('launch_formal_exam', examPayload);
       return;
     }
 
@@ -530,7 +546,6 @@ export const TeacherDashboard: React.FC = () => {
     return 'QUIZ_INTERATIVO';
   };
 
-  // ⚡ Declaradas uma única vez (sem duplicações)
   const activeSubjectIds = activeClassData?.modules?.map((m: any) => m.subjectId) || [];
   const activeSubjectNames = activeClassData?.modules?.map((m: any) => m.subject?.name?.toLowerCase().trim()) || [];
 
@@ -956,7 +971,12 @@ export const TeacherDashboard: React.FC = () => {
 
                         <p className="text-[11px] text-slate-400 mt-1 flex items-center justify-center gap-1">
                           <Globe className="w-3 h-3 text-indigo-400" />
-                          <span>Acesse pelo navegador: <strong className="text-slate-200">{accessUrl}</strong></span>
+                          <span>
+                            Acesse pelo navegador:{' '}
+                            <strong className="text-slate-200">
+                              {selectedQr?.joinUrl || `${accessUrl}?code=${selectedQr?.classCode}&classId=${activeClassId}`}
+                            </strong>
+                          </span>
                         </p>
                       </div>
 

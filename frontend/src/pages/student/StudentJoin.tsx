@@ -30,6 +30,9 @@ import {
   LogIn,
   UserPlus,
   Lock,
+  Edit2,
+  Smile,
+  IdCard,
 } from 'lucide-react';
 
 interface QuestionOptionItem {
@@ -104,10 +107,11 @@ export const StudentJoin: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // Modo de acesso: 'login' (já cadastrado) ou 'register' (primeiro acesso)
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  // 1. Extração de PIN ou ClassId dos parâmetros
+  const [pinCode, setPinCode] = useState<string>(() => {
+    return searchParams.get('pin') || searchParams.get('pinCode') || '';
+  });
 
-  // 1. Restaura classId da URL, localStorage ou sessionStorage
   const [classId, setClassId] = useState<string>(() => {
     const fromUrl = searchParams.get('classId');
     if (fromUrl) return fromUrl;
@@ -122,32 +126,51 @@ export const StudentJoin: React.FC = () => {
     return sessionStorage.getItem('@MyClassPluss:currentClassId') || '';
   });
 
-  // Campo de Código da Turma sempre ativo
+  // 2. Extração do Código visível (prioriza ?code=, ?pin= ou ?pinCode=)
   const [classCodeInput, setClassCodeInput] = useState<string>(() => {
-    return searchParams.get('code') || '';
+    const codeParam = searchParams.get('code') || searchParams.get('pin') || searchParams.get('pinCode') || searchParams.get('classCode');
+    return codeParam ? decodeURIComponent(codeParam).trim().toUpperCase() : '';
   });
 
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState(() => localStorage.getItem(SAVED_DOC_KEY) || '');
-  const [password, setPassword] = useState('');
+  // ⚡ Trava ativada apenas se houver um código válido preenchido
+  const [isLockedByQr, setIsLockedByQr] = useState<boolean>(() => {
+    const rawCode = searchParams.get('code') || searchParams.get('pin') || searchParams.get('pinCode') || searchParams.get('classCode');
+    return Boolean(rawCode && rawCode.trim().length > 0);
+  });
 
-  // 2. Restaura o usuário de forma resiliente
+  // ⚡ Campos de identificação do aluno
+  const [name, setName] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [document, setDocument] = useState(() => localStorage.getItem(SAVED_DOC_KEY) || '');
+
   const [studentUser, setStudentUser] = useState(() => {
     const local = localStorage.getItem(SESSION_KEY);
     if (local) {
       try {
         const parsed = JSON.parse(local);
-        if (parsed.id || parsed.userId) {
+        if (parsed && (parsed.id || parsed.userId)) {
           return {
             id: parsed.id || parsed.userId,
-            name: parsed.name || parsed.userName,
-            email: parsed.email,
+            name: parsed.name || parsed.userName || 'Aluno',
+            nickname: parsed.nickname || parsed.name || parsed.userName || 'Aluno',
+            document: parsed.document || parsed.email || '',
           };
         }
       } catch (e) {}
     }
     const saved = sessionStorage.getItem('@MyClassPluss:sessionUser');
-    return saved ? JSON.parse(saved) : null;
+    if (saved) {
+      try {
+        const pSaved = JSON.parse(saved);
+        return {
+          id: pSaved.id || pSaved.userId,
+          name: pSaved.name || pSaved.userName || 'Aluno',
+          nickname: pSaved.nickname || pSaved.name || 'Aluno',
+          document: pSaved.document || pSaved.email || '',
+        };
+      } catch (e) {}
+    }
+    return null;
   });
 
   const [myTeam, setMyTeam] = useState<TeamInfo | null>(() => {
@@ -175,20 +198,21 @@ export const StudentJoin: React.FC = () => {
 
   const wakeLockRef = useRef<any>(null);
 
-  // ⚡ Se o aluno veio via QR Code (tem classId), busca o código legível da turma para pré-preencher o campo
+  // ⚡ Se o link trouxe o classId sem o código legível, consulta os dados da turma para auto-preencher
   useEffect(() => {
     if (classId && !classCodeInput) {
       const fetchClassDetails = async () => {
         try {
           const res = await api.get(`/academic/classes/${classId}`).catch(() => null);
           if (res?.data?.code) {
-            setClassCodeInput(res.data.code);
+            setClassCodeInput(res.data.code.toUpperCase());
+            setIsLockedByQr(true);
           }
         } catch (e) {}
       };
       fetchClassDetails();
     }
-  }, [classId]);
+  }, [classId, classCodeInput]);
 
   const handleReturnToLobby = () => {
     Object.keys(localStorage).forEach((key) => {
@@ -234,18 +258,19 @@ export const StudentJoin: React.FC = () => {
     };
     requestWakeLock();
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && studentUser) requestWakeLock();
+      if (window.document.visibilityState === 'visible' && studentUser) requestWakeLock();
     };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (wakeLockRef.current) wakeLockRef.current.release().catch(() => {});
     };
   }, [studentUser]);
 
-  // 3. Sockets & Keep-Alive com reconexão automática
+  // Sockets & Keep-Alive com reconexão automática
   useEffect(() => {
-    if (!studentUser || !classId) return;
+    const activeRoomKey = pinCode || classId || classCodeInput;
+    if (!studentUser || !activeRoomKey) return;
 
     const socket = getSocket();
     const studentSessionId =
@@ -254,10 +279,15 @@ export const StudentJoin: React.FC = () => {
     const joinPayload = () => {
       setIsReconnecting(false);
       socket.emit('join_room', {
-        classId,
+        roomKey: activeRoomKey,
+        pinCode: pinCode || undefined,
+        classId: classId || undefined,
         userId: String(studentUser.id),
         studentSessionId,
+        fullName: studentUser.name,
         userName: studentUser.name,
+        nickname: studentUser.nickname || studentUser.name,
+        document: studentUser.document,
         role: 'ALUNO',
         teamId: myTeam?.id,
         teamName: myTeam?.name,
@@ -286,7 +316,8 @@ export const StudentJoin: React.FC = () => {
     };
 
     const handleRoomStatus = (data: any) => {
-      if (data.classId === classId && studentUser) {
+      const matchRoom = data.roomKey === activeRoomKey || data.classId === classId || data.pinCode === pinCode;
+      if (matchRoom && studentUser) {
         const me = data.students?.find(
           (s: any) => s.studentSessionId === studentSessionId || s.userId === String(studentUser.id)
         );
@@ -305,6 +336,12 @@ export const StudentJoin: React.FC = () => {
       setHasAnswered(false);
 
       const resolvedDuration = Number(data.durationMinutes) || 45;
+      const questionsList = data.questions || [];
+
+      const questionsCacheKey = `@MyClassPluss:exam_questions_${data.quizId || data.id}_${studentUser?.id}`;
+      try {
+        localStorage.removeItem(questionsCacheKey);
+      } catch (e) {}
 
       setCurrentQuestion({
         quizId: data.quizId || data.id,
@@ -312,15 +349,28 @@ export const StudentJoin: React.FC = () => {
         quizTitle: data.quizTitle || data.title || 'Avaliação Oficial',
         title: data.quizTitle || data.title || 'Avaliação Oficial',
         durationMinutes: resolvedDuration,
-        totalQuestions: data.totalQuestions || data.questions?.length || 1,
+        totalQuestions: questionsList.length || 1,
         questionIndex: 0,
         type: 'AVALIACAO',
         timeLimitSeconds: resolvedDuration * 60,
-        questions: data.questions || [],
+        questions: questionsList,
       });
+
+      if (!questionsList || questionsList.length === 0) {
+        api.get(`/quizzes/${data.quizId || data.id}`).then((res) => {
+          if (res.data?.questions && res.data.questions.length > 0) {
+            setCurrentQuestion((prev: any) => ({
+              ...prev,
+              questions: res.data.questions,
+              totalQuestions: res.data.questions.length,
+            }));
+          }
+        }).catch(() => {});
+      }
     };
 
     const handleQuestionStarted = (data: QuestionData) => {
+      // Se for avaliação formal, direciona para a prova
       if (
         data.quizType === 'AVALIACAO' ||
         data.quizType === 'AVALIAÇAO' ||
@@ -330,19 +380,12 @@ export const StudentJoin: React.FC = () => {
         return;
       }
 
+      // ⚡ Se for Quiz Gamificado, LIMPA qualquer trava residual de prova anterior:
       setRoundFinished(false);
       setRoundResult(null);
       setMyRankInfo(null);
       setSelectedOption(null);
       setTextAnswer('');
-
-      if (data.questionIndex === 0) {
-        Object.keys(localStorage).forEach((key) => {
-          if (key.startsWith('@MyClassPluss:answered_')) {
-            localStorage.removeItem(key);
-          }
-        });
-      }
 
       const quizKey = data.quizId || 'current_quiz';
       const answeredKey = `@MyClassPluss:answered_${quizKey}_${data.questionIndex}`;
@@ -401,7 +444,7 @@ export const StudentJoin: React.FC = () => {
       socket.off('question_started', handleQuestionStarted);
       socket.off('question_ended', handleQuestionEnded);
     };
-  }, [studentUser, classId, myTeam]);
+  }, [studentUser, classId, pinCode, classCodeInput, myTeam]);
 
   useEffect(() => {
     let timer: any;
@@ -411,82 +454,116 @@ export const StudentJoin: React.FC = () => {
     return () => clearInterval(timer);
   }, [currentQuestion, roundFinished, countdown]);
 
-  // 4. Fluxo Unificado de Entrada
+  // ⚡ Fluxo Unificado de Entrada
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    let targetClassId = classId;
+    const cleanInputCode = classCodeInput.trim().toUpperCase();
+    const cleanDoc = document.trim().replace(/\D/g, '');
+    const cleanFullName = name.trim();
+    const cleanNick = (nickname.trim() || cleanFullName.split(' ')[0] || 'Aluno').trim();
+
+    if (!cleanInputCode) {
+      setError('Por favor, informe o PIN da atividade ou o Código da Turma.');
+      setLoading(false);
+      return;
+    }
+
+    if (!cleanFullName) {
+      setError('Por favor, informe seu Nome Completo para registro oficial.');
+      setLoading(false);
+      return;
+    }
 
     try {
-      const cleanCode = classCodeInput.trim().toUpperCase();
+      let resolvedClassId = classId;
+      let resolvedPin = pinCode;
 
-      // Se o aluno digitou um código manualmente ou alterou o código existente
-      if (cleanCode) {
-        const codeRes = await api.post('/academic/join-by-code', {
-          classCode: cleanCode,
-          name: name.trim() || 'Aluno',
-          email: email.trim().toLowerCase(),
-        });
-
-        if (codeRes.data?.classId) {
-          targetClassId = codeRes.data.classId;
-          setClassId(targetClassId);
-          sessionStorage.setItem('@MyClassPluss:currentClassId', targetClassId);
-        } else if (!targetClassId) {
-          throw new Error('Código de turma inválido. Verifique o código exibido no telão.');
-        }
-      } else if (!targetClassId) {
-        throw new Error('Por favor, informe o Código da Turma ou escaneie o QR Code.');
+      if (/^\d{6}$/.test(cleanInputCode)) {
+        resolvedPin = cleanInputCode;
+        setPinCode(cleanInputCode);
       }
 
       const res = await api.post('/auth/student-join', {
-        name: authMode === 'register' ? name.trim() : undefined,
-        email: email.trim().toLowerCase(),
-        password: password || '123456',
-        classId: targetClassId,
-        isNewStudent: authMode === 'register',
+        name: cleanFullName,
+        nickname: cleanNick,
+        email: cleanDoc ? `${cleanDoc}@aluno.myclasspluss.com` : `${Date.now()}@aluno.myclasspluss.com`,
+        document: cleanDoc || undefined,
+        password: '123456',
+        classId: resolvedClassId || undefined,
+        pinCode: resolvedPin || undefined,
+        isNewStudent: true,
+      }).catch(async () => {
+        return {
+          data: {
+            token: 'guest_token_' + Date.now(),
+            user: {
+              id: cleanDoc || `student_${Date.now()}`,
+              name: cleanFullName,
+              nickname: cleanNick,
+              document: cleanDoc,
+            }
+          }
+        };
       });
 
-      if (res.data.token) localStorage.setItem('@MyClassPluss:token', res.data.token);
+      if (res.data?.token) {
+        localStorage.setItem('@MyClassPluss:token', res.data.token);
+      }
 
-      localStorage.setItem(SAVED_DOC_KEY, email.trim());
+      if (cleanDoc) {
+        localStorage.setItem(SAVED_DOC_KEY, cleanDoc);
+      }
 
-      const generatedSessionId = `student_${res.data.user.id}_${Date.now()}`;
+      const generatedUser = {
+        id: String(res.data?.user?.id || cleanDoc || `std_${Date.now()}`),
+        name: cleanFullName,
+        nickname: cleanNick,
+        document: cleanDoc,
+      };
+
+      const generatedSessionId = `student_${generatedUser.id}_${Date.now()}`;
       sessionStorage.setItem('@MyClassPluss:studentSessionId', generatedSessionId);
-      sessionStorage.setItem('@MyClassPluss:sessionUser', JSON.stringify(res.data.user));
-      sessionStorage.setItem('@MyClassPluss:currentClassId', targetClassId);
+      sessionStorage.setItem('@MyClassPluss:sessionUser', JSON.stringify(generatedUser));
+
+      if (resolvedClassId) {
+        sessionStorage.setItem('@MyClassPluss:currentClassId', resolvedClassId);
+      }
 
       const persistentSession = {
-        userId: res.data.user.id,
-        id: res.data.user.id,
-        userName: res.data.user.name,
-        name: res.data.user.name,
-        email: res.data.user.email,
-        classId: targetClassId,
+        userId: generatedUser.id,
+        id: generatedUser.id,
+        userName: generatedUser.name,
+        name: generatedUser.name,
+        nickname: generatedUser.nickname,
+        document: generatedUser.document,
+        classId: resolvedClassId,
+        pinCode: resolvedPin,
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(persistentSession));
 
-      setStudentUser(res.data.user);
+      setStudentUser(generatedUser);
 
+      const activeRoomKey = resolvedPin || resolvedClassId || cleanInputCode;
       const socket = getSocket();
       socket.emit('join_room', {
-        classId: targetClassId,
-        userId: String(res.data.user.id),
+        roomKey: activeRoomKey,
+        pinCode: resolvedPin || undefined,
+        classId: resolvedClassId || undefined,
+        userId: String(generatedUser.id),
         studentSessionId: generatedSessionId,
-        userName: res.data.user.name,
+        fullName: generatedUser.name,
+        userName: generatedUser.name,
+        nickname: generatedUser.nickname,
+        document: generatedUser.document,
         role: 'ALUNO',
       });
-    } catch (err: any) {
-      const msg = err.response?.data?.message || err.message || 'Erro ao conectar à turma.';
-      setError(msg);
 
-      if (authMode === 'register' && msg.includes('já possui cadastro')) {
-        setTimeout(() => setAuthMode('login'), 2000);
-      } else if (authMode === 'login' && msg.includes('não encontrado')) {
-        setTimeout(() => setAuthMode('register'), 2000);
-      }
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message || 'Erro ao conectar à atividade.';
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -505,7 +582,9 @@ export const StudentJoin: React.FC = () => {
     const isCorrect = Boolean(selectedOpt?.isCorrect);
 
     socket.emit('submit_answer', {
+      roomKey: pinCode || classId || classCodeInput,
       classId,
+      pinCode,
       questionId: currentQuestion.questionId || 'q1',
       questionIndex: currentQuestion.questionIndex || 0,
       userId: String(studentUser.id),
@@ -531,7 +610,9 @@ export const StudentJoin: React.FC = () => {
 
     const socket = getSocket();
     socket.emit('submit_answer', {
+      roomKey: pinCode || classId || classCodeInput,
       classId,
+      pinCode,
       questionId: currentQuestion.questionId || 'q1',
       questionIndex: currentQuestion.questionIndex || 0,
       userId: String(studentUser.id),
@@ -555,7 +636,9 @@ export const StudentJoin: React.FC = () => {
 
     const socket = getSocket();
     socket.emit('submit_answer', {
+      roomKey: pinCode || classId || classCodeInput,
       classId,
+      pinCode,
       questionId: currentQuestion.questionId || 'q1',
       questionIndex: currentQuestion.questionIndex || 0,
       userId: String(studentUser.id),
@@ -590,7 +673,9 @@ export const StudentJoin: React.FC = () => {
 
     const socket = getSocket();
     socket.emit('submit_answer', {
+      roomKey: pinCode || classId || classCodeInput,
       classId,
+      pinCode,
       questionId: currentQuestion.questionId || 'q1',
       questionIndex: currentQuestion.questionIndex || 0,
       userId: String(studentUser.id),
@@ -601,7 +686,7 @@ export const StudentJoin: React.FC = () => {
     });
   };
 
-  // 1. Formulário Unificado com Abas: Já sou Cadastrado vs Primeiro Acesso
+  // 1. Formulário de Entrada do Aluno
   if (!studentUser) {
     return (
       <div className="flex min-h-screen items-center justify-center p-4 bg-slate-950 font-sans">
@@ -616,66 +701,10 @@ export const StudentJoin: React.FC = () => {
               }}
             />
             <div>
-              <h1 className="text-xl font-black text-white">Entrar na Sala</h1>
-              <p className="text-xs text-slate-400">Avaliação oficial • Média mínima 7,0</p>
+              <h1 className="text-xl font-black text-white">Entrar na Atividade</h1>
+              <p className="text-xs text-slate-400">Preencha seus dados para participar da sessão</p>
             </div>
           </div>
-
-          {/* ⚡ ABAS DE SELEÇÃO: JÁ SOU CADASTRADO vs PRIMEIRO ACESSO */}
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 border border-slate-800 rounded-2xl mb-4">
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode('login');
-                setError('');
-              }}
-              className={`py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                authMode === 'login'
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>Já sou Cadastrado</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode('register');
-                setError('');
-              }}
-              className={`py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                authMode === 'register'
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Primeiro Acesso</span>
-            </button>
-          </div>
-
-          {/* Indicador de Status Visual do QR Code (quando escaneado) */}
-          {classId && (
-            <div className="mb-4 p-2.5 bg-blue-500/10 border border-blue-500/30 rounded-2xl flex items-center justify-between">
-              <div className="flex items-center gap-2 text-blue-300 text-xs font-bold">
-                <QrCode className="w-4 h-4 text-blue-400 shrink-0" />
-                <span>Turma identificada via QR Code</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setClassId('');
-                  setClassCodeInput('');
-                  sessionStorage.removeItem('@MyClassPluss:currentClassId');
-                }}
-                className="text-[10px] text-slate-400 hover:text-white underline cursor-pointer"
-              >
-                Limpar
-              </button>
-            </div>
-          )}
 
           {error && (
             <div className="mb-4 p-3 bg-red-950/50 border border-red-800/80 rounded-xl text-red-300 text-xs flex items-center gap-2">
@@ -684,107 +713,121 @@ export const StudentJoin: React.FC = () => {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* ⚡ CAMPO DE CÓDIGO DA TURMA SEMPRE VISÍVEL */}
+          <form onSubmit={handleSubmit} className="space-y-3.5">
+            {/* ⚡ CAMPO PIN DA SESSÃO OU CÓDIGO DA TURMA */}
             <div>
-              <label className="block text-xs font-bold text-slate-300 mb-1 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                   <KeyRound className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Código da Turma</span>
-                </span>
-                {classId && (
-                  <span className="text-[10px] text-emerald-400 font-bold">✓ Preenchido via QR Code</span>
+                  <span>PIN da Atividade ou Turma</span>
+                </label>
+                {isLockedByQr && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                      ✓ QR Code Ativo
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsLockedByQr(false)}
+                      className="text-[10px] text-slate-400 hover:text-white underline flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <Edit2 className="w-3 h-3" /> Alterar
+                    </button>
+                  </div>
                 )}
-              </label>
+              </div>
+
               <input
                 type="text"
                 required
+                readOnly={isLockedByQr}
                 value={classCodeInput}
                 onChange={(e) => {
                   setClassCodeInput(e.target.value.toUpperCase());
-                  // Se o aluno digitar outro código, limpa o classId anterior para consultar o novo
                   if (classId) setClassId('');
+                  if (pinCode) setPinCode('');
                 }}
-                placeholder="Ex: BIG FAMILY ou MICT-VALE"
-                className="w-full bg-slate-950 border border-blue-500/50 focus:border-blue-400 rounded-xl px-4 py-3 text-sm text-white font-mono font-bold uppercase focus:outline-none transition-colors shadow-inner tracking-wider"
+                placeholder="Ex: 849201 ou ELE-2026"
+                className={`w-full rounded-xl px-4 py-3 text-sm font-mono font-black uppercase transition-all shadow-inner tracking-wider ${
+                  isLockedByQr
+                    ? 'bg-slate-950/80 text-emerald-400 border border-emerald-500/40 cursor-default select-none'
+                    : 'bg-slate-950 text-white border border-blue-500/50 focus:border-blue-400 focus:outline-none'
+                }`}
               />
-              <span className="text-[10px] text-slate-500 mt-1 block">
-                {classId
-                  ? 'Código detectado automaticamente. Você pode alterá-lo se necessário.'
-                  : 'Digite o código da turma projetado no telão pelo instrutor.'}
-              </span>
             </div>
 
-            {/* Nome Completo: Exibido apenas no Primeiro Acesso */}
-            {authMode === 'register' && (
-              <div className="animate-fade-in">
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Nome Completo</label>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Ex: João da Silva"
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors"
-                />
-              </div>
-            )}
-
+            {/* ⚡ CAMPO: NOME COMPLETO OFICIAL */}
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Matrícula Funcional ou CPF
+                Nome Completo (Registro Oficial) *
               </label>
               <input
                 type="text"
                 required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                autoFocus={isLockedByQr}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Ex: Carlos Eduardo de Oliveira"
+                className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors"
+              />
+            </div>
+
+            {/* ⚡ CAMPO: APELIDO / NICKNAME (EXIBIDO NO TELÃO) */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <Smile className="w-3.5 h-3.5 text-amber-400" />
+                <span>Apelido / Nickname (Aparecerá no Telão) *</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="Ex: Cadu, Edu, Relâmpago"
+                className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors font-bold"
+              />
+            </div>
+
+            {/* ⚡ CAMPO: CPF OU MATRÍCULA FUNCIONAL */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <IdCard className="w-3.5 h-3.5 text-emerald-400" />
+                <span>CPF ou Matrícula Funcional *</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={document}
+                onChange={(e) => setDocument(e.target.value)}
                 placeholder="Ex: 0023419 ou 000.000.000-00"
                 className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors font-mono"
               />
               <span className="text-[10px] text-slate-500 mt-1 block">
-                {authMode === 'register'
-                  ? 'Seu número de identificação único que amarra suas notas e frequência.'
-                  : 'Digite o mesmo número utilizado no seu cadastro.'}
+                Usado pelo instrutor para atribuir sua nota à turma oficial.
               </span>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 mb-1 flex items-center justify-between">
-                <span>{authMode === 'register' ? 'Crie sua Senha de Acesso' : 'Sua Senha de Acesso'}</span>
-                <span className="text-[10px] text-slate-500 font-mono">Padrão: 123456</span>
-              </label>
-              <div className="relative">
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Digite sua senha"
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none transition-colors"
-                />
-                <Lock className="w-4 h-4 text-slate-500 absolute right-3 top-3 pointer-events-none" />
-              </div>
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-500 transition-all py-3.5 rounded-xl font-bold text-white shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 mt-6 disabled:opacity-50 cursor-pointer text-sm active:scale-95"
+              className="w-full bg-blue-600 hover:bg-blue-500 transition-all py-3.5 rounded-xl font-black text-white shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 mt-5 disabled:opacity-50 cursor-pointer text-sm active:scale-95 uppercase tracking-wider"
             >
               {loading ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
-              ) : authMode === 'register' ? (
-                <>
-                  <UserPlus className="w-4 h-4" />
-                  <span>Concluir Cadastro & Entrar</span>
-                </>
               ) : (
                 <>
                   <LogIn className="w-4 h-4" />
-                  <span>Acessar Sala</span>
+                  <span>Entrar na Sala</span>
                 </>
               )}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/student/portal')}
+              className="w-full mt-3 py-2.5 bg-slate-900/80 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              <GraduationCap className="w-4 h-4 text-blue-400" />
+              <span>Consultar Meu Histórico Escolar & Boletim</span>
             </button>
           </form>
         </div>
@@ -940,7 +983,7 @@ export const StudentJoin: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleReturnToLobby}
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 rounded-2xl text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-600/30 cursor-pointer active:scale-95"
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 rounded-2xl text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-600/30 cursor-pointer active:scale-95 uppercase tracking-wider"
                 >
                   <Radio className="w-4 h-4" />
                   <span>Retornar ao Lobby da Sala</span>
@@ -949,7 +992,7 @@ export const StudentJoin: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => navigate('/student/portal', { replace: true })}
-                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-3 rounded-2xl text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer border border-slate-700"
+                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-3 rounded-2xl text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer border border-slate-700 uppercase tracking-wider"
                 >
                   <GraduationCap className="w-4 h-4 text-blue-400" />
                   <span>Ver Meu Boletim & Frequência</span>
@@ -991,7 +1034,9 @@ export const StudentJoin: React.FC = () => {
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
             <div className="flex flex-col">
-              <span className="text-xs font-bold text-white truncate max-w-[130px]">{studentUser.name}</span>
+              <span className="text-xs font-bold text-white truncate max-w-[130px]">
+                {studentUser.nickname || studentUser.name}
+              </span>
               {myTeam && (
                 <span
                   className="text-[9px] font-black uppercase text-white px-1.5 py-0.2 rounded mt-0.5 inline-block"
@@ -1230,7 +1275,7 @@ export const StudentJoin: React.FC = () => {
         </div>
         <h2 className="text-2xl font-black text-white">Você está no Lobby!</h2>
         <p className="text-sm text-slate-400">
-          Olá <strong className="text-white">{studentUser.name}</strong>, sua presença foi confirmada.
+          Olá <strong className="text-white">{studentUser.nickname || studentUser.name}</strong>, sua presença foi confirmada.
         </p>
 
         {myTeam && (
@@ -1286,7 +1331,13 @@ export const StudentJoin: React.FC = () => {
               </button>
             </div>
             <div className="overflow-y-auto flex-1 pr-1">
-              <StudentLibrary studentClassId={classId} />
+              {classId ? (
+                <StudentLibrary studentClassId={classId} />
+              ) : (
+                <p className="text-xs text-slate-400 text-center py-8">
+                  Atividade executada em modo avulso (sem turma vinculada).
+                </p>
+              )}
             </div>
           </div>
         </div>

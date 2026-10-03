@@ -16,10 +16,13 @@ interface TeamItem {
   color: string;
 }
 
-interface StudentSession {
+export interface StudentSession {
   userId: string;
-  userName: string;
+  userName: string;       // Nome Completo
+  nickname: string;       // Apelido do Telão
+  document?: string;      // CPF ou Matrícula
   socketId: string;
+  studentSessionId?: string;
   teamId?: string | null;
   teamName?: string | null;
   teamColor?: string | null;
@@ -38,28 +41,33 @@ interface ActiveQuestionState {
   timeLimitSeconds: number;
   durationMinutes?: number;
   options: any[];
-  originalOptions?: any[]; // ⚡ Gabarito puro preservado para conferência exata
-  correctIndex?: number;   // ⚡ Índice da alternativa correta (0: Red, 1: Blue, 2: Yellow, 3: Green)
+  originalOptions?: any[];
+  correctIndex?: number;
   sliderConfig?: any;
   questions?: any[];
   launchedAt: number;
 }
 
 interface RoomState {
-  classId: string;
+  roomKey: string;             // Pode ser classId ou o PINCode de 6 dígitos
+  pinCode?: string;
+  quizId?: string;
+  classId?: string | null;
   isTeamMode: boolean;
   teams: TeamItem[];
   students: { [userId: string]: StudentSession };
   currentTotalTime: number;
   currentQuestionIndex: number;
   currentQuestionState: ActiveQuestionState | null;
-  activeFormalExam: any | null; // ⚡ Armazena estado de avaliação formal ativa
+  activeFormalExam: any | null;
   answersHistory: { [userId: string]: { [questionIndex: number]: boolean } };
-  roundOptionVotes: { [userId: string]: number }; // ⚡ Armazena qual opção (0, 1, 2 ou 3) o aluno votou nesta rodada
+  roundOptionVotes: { [userId: string]: number };
   scores: {
     [userId: string]: {
       userId: string;
       userName: string;
+      nickname: string;
+      document?: string;
       score: number;
       streak: number;
       totalCorrect: number;
@@ -76,35 +84,68 @@ interface RoomState {
   cors: {
     origin: '*',
   },
-  maxHttpBufferSize: 5e7, // ⚡ Suporte a payloads de até 50MB
+  maxHttpBufferSize: 5e7, // 50MB para suportar imagens e schemas
 })
 export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server!: Server;
 
-  private rooms: { [classId: string]: RoomState } = {};
+  // Mapa de salas em memória indexadas pela chave da sala (PIN ou classId)
+  private rooms: { [roomKey: string]: RoomState } = {};
 
   constructor(private prisma: PrismaService) {}
 
   handleConnection(client: Socket) {}
 
   handleDisconnect(client: Socket) {
-    for (const classId of Object.keys(this.rooms)) {
-      const room = this.rooms[classId];
-      for (const userId of Object.keys(room.students)) {
-        if (room.students[userId].socketId === client.id) {
-          delete room.students[userId];
-          this.broadcastRoomStatus(classId);
+    for (const roomKey of Object.keys(this.rooms)) {
+      const room = this.rooms[roomKey];
+      for (const studentKey of Object.keys(room.students)) {
+        if (room.students[studentKey].socketId === client.id) {
+          delete room.students[studentKey];
+          this.broadcastRoomStatus(roomKey);
           break;
         }
       }
     }
   }
 
-  private getOrCreateRoom(classId: string): RoomState {
-    if (!this.rooms[classId]) {
-      this.rooms[classId] = {
-        classId,
+  // ⚡ Remove o aluno da memória ativa quando sua matrícula for excluída pelo professor
+  public removeStudentFromMemory(userId: string, classId?: string) {
+    for (const roomKey of Object.keys(this.rooms)) {
+      const room = this.rooms[roomKey];
+      if (!classId || room.classId === classId || roomKey === classId) {
+        for (const key of Object.keys(room.students)) {
+          const st = room.students[key];
+          if (st.userId === userId || key === userId) {
+            delete room.students[key];
+            delete room.scores[st.userId];
+            break;
+          }
+        }
+        this.broadcastRoomStatus(roomKey);
+      }
+    }
+  }
+
+  // ⚡ Limpa todos os alunos da sala em memória
+  public clearRoomMemory(classId: string) {
+    for (const roomKey of Object.keys(this.rooms)) {
+      const room = this.rooms[roomKey];
+      if (room.classId === classId || roomKey === classId) {
+        room.students = {};
+        room.scores = {};
+        room.answersHistory = {};
+        room.roundOptionVotes = {};
+        this.broadcastRoomStatus(roomKey);
+      }
+    }
+  }
+
+  private getOrCreateRoom(roomKey: string): RoomState {
+    if (!this.rooms[roomKey]) {
+      this.rooms[roomKey] = {
+        roomKey,
         isTeamMode: false,
         teams: [],
         students: {},
@@ -117,29 +158,95 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         scores: {},
       };
     }
-    return this.rooms[classId];
+    return this.rooms[roomKey];
   }
 
-  private broadcastRoomStatus(classId: string) {
-    const room = this.rooms[classId];
+  private broadcastRoomStatus(roomKey: string) {
+    const room = this.rooms[roomKey];
     if (!room) return;
 
     const studentList = Object.values(room.students);
-    this.server.to(classId).emit('room_status', {
-      classId,
+    const payload = {
+      roomKey,
+      classId: room.classId,
+      pinCode: room.pinCode,
       isTeamMode: room.isTeamMode,
-      students: studentList,
+      students: studentList.map((s) => ({
+        userId: s.userId,
+        userName: s.userName,
+        nickname: s.nickname,
+        document: s.document,
+        teamName: s.teamName,
+        teamColor: s.teamColor,
+      })),
       totalStudents: studentList.length,
+    };
+
+    this.server.to(roomKey).emit('room_status', payload);
+    this.server.to(`room_${roomKey}`).emit('room_status', payload);
+  }
+
+  // ⚡ 1. CRIAÇÃO DE SESSÃO INDEPENDENTE VIA PIN
+  @SubscribeMessage('create_pin_session')
+  async handleCreatePinSession(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { quizId: string; classId?: string },
+  ) {
+    const quiz = await this.prisma.quiz.findUnique({
+      where: { id: data.quizId },
+      include: { questions: { include: { options: true } } },
+    });
+
+    if (!quiz) {
+      client.emit('error_message', { message: 'Atividade não encontrada.' });
+      return;
+    }
+
+    let pin = Math.floor(100000 + Math.random() * 900000).toString();
+    while (await this.prisma.quizSession.findUnique({ where: { pinCode: pin } })) {
+      pin = Math.floor(100000 + Math.random() * 900000).toString();
+    }
+
+    const sessionRecord = await this.prisma.quizSession.create({
+      data: {
+        pinCode: pin,
+        quizId: quiz.id,
+        classId: data.classId || undefined,
+        isLive: true,
+      },
+    });
+
+    const room = this.getOrCreateRoom(pin);
+    room.pinCode = pin;
+    room.quizId = quiz.id;
+    room.classId = data.classId || null;
+
+    client.join(pin);
+    client.join(`room_${pin}`);
+
+    client.emit('session_created', {
+      sessionId: sessionRecord.id,
+      pinCode: pin,
+      quizId: quiz.id,
+      quizTitle: quiz.title,
+      quizType: quiz.type,
+      totalQuestions: quiz.questions.length,
     });
   }
 
+  // ⚡ 2. ENTRADA DO ALUNO (DESDUPLICAÇÃO RIGOROSA E MATRÍCULA NO BANCO)
   @SubscribeMessage('join_room')
-  handleJoinRoom(
+  async handleJoinRoom(
     @MessageBody()
     data: {
-      classId: string;
-      userId: string;
-      userName: string;
+      roomKey?: string;
+      classId?: string;
+      pinCode?: string;
+      fullName: string;
+      nickname: string;
+      document?: string;
+      userId?: string;
+      studentSessionId?: string;
       role?: string;
       teamId?: string;
       teamName?: string;
@@ -147,46 +254,140 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
     },
     @ConnectedSocket() client: Socket,
   ) {
-    const { classId, userId, userName, role } = data;
-    if (!classId || !userId) return;
+    let activeKey = data.pinCode || data.roomKey || data.classId;
+    if (!activeKey) return;
 
-    client.join(classId);
-    const room = this.getOrCreateRoom(classId);
+    let foundClass = await this.prisma.class.findFirst({
+      where: {
+        OR: [
+          ...(data.classId ? [{ id: data.classId }] : []),
+          { id: activeKey },
+          { code: activeKey },
+        ],
+      },
+    });
 
-    if (role !== 'PROFESSOR') {
-      const uid = String(userId);
-      room.students[uid] = {
-        userId: uid,
-        userName: userName || 'Aluno',
+    const resolvedClassId = foundClass?.id || data.classId;
+
+    client.join(activeKey);
+    client.join(`room_${activeKey}`);
+    if (resolvedClassId && resolvedClassId !== activeKey) {
+      client.join(resolvedClassId);
+      client.join(`room_${resolvedClassId}`);
+    }
+
+    const primaryRoomKey = resolvedClassId || activeKey;
+    const room = this.getOrCreateRoom(primaryRoomKey);
+    room.classId = primaryRoomKey;
+    if (data.pinCode) room.pinCode = data.pinCode;
+
+    if (data.role !== 'PROFESSOR') {
+      const cleanDoc = data.document ? data.document.replace(/\D/g, '').trim() : null;
+      const cleanName = data.fullName ? data.fullName.trim() : 'Aluno';
+
+      // ⚡ Busca estrita no banco para reusar o mesmo cadastro e impedir múltiplos IDs
+      let userRecord = await (this.prisma.user as any).findFirst({
+        where: {
+          OR: [
+            ...(data.userId ? [{ id: data.userId }] : []),
+            ...(cleanDoc ? [{ document: cleanDoc }] : []),
+            { name: { equals: cleanName, mode: 'insensitive' } },
+          ],
+        },
+      });
+
+      if (!userRecord) {
+        const fallbackEmailDoc = cleanDoc || cleanName.toLowerCase().replace(/\s+/g, '.');
+        userRecord = await (this.prisma.user as any).create({
+          data: {
+            name: cleanName,
+            nickname: data.nickname ? data.nickname.trim() : cleanName.split(' ')[0],
+            document: cleanDoc || undefined,
+            email: `${fallbackEmailDoc}@aluno.myclasspluss.com`,
+            passwordHash: '$2b$10$DefaultStudentAutoRegisteredPasswordHash...',
+            role: 'ALUNO',
+          },
+        });
+      } else {
+        userRecord = await (this.prisma.user as any).update({
+          where: { id: userRecord.id },
+          data: {
+            name: cleanName,
+            nickname: data.nickname ? data.nickname.trim() : userRecord.nickname,
+            document: cleanDoc || userRecord.document,
+          },
+        }).catch(() => userRecord);
+      }
+
+      const effectiveUserId = userRecord.id;
+
+      // ⚡ Garante a matrícula na turma
+      if (foundClass) {
+        await this.prisma.enrollment.upsert({
+          where: {
+            userId_classId: {
+              userId: effectiveUserId,
+              classId: foundClass.id,
+            },
+          },
+          create: {
+            userId: effectiveUserId,
+            classId: foundClass.id,
+          },
+          update: {},
+        }).catch(() => {});
+      }
+
+      // ⚡ PREVENÇÃO DE DUPLICIDADE EM MEMÓRIA:
+      // Remove qualquer entrada anterior com mesmo ID, Documento ou Nome
+      for (const existingKey of Object.keys(room.students)) {
+        const existingStudent = room.students[existingKey];
+        if (
+          existingStudent.userId === effectiveUserId ||
+          existingStudent.userName.toLowerCase() === cleanName.toLowerCase() ||
+          (cleanDoc && existingStudent.document === cleanDoc)
+        ) {
+          delete room.students[existingKey];
+        }
+      }
+
+      room.students[effectiveUserId] = {
+        userId: effectiveUserId,
+        userName: cleanName,
+        nickname: data.nickname ? data.nickname.trim() : (userRecord.nickname || cleanName.split(' ')[0]),
+        document: cleanDoc || userRecord.document || undefined,
         socketId: client.id,
-        teamId: data.teamId || room.students[uid]?.teamId || null,
-        teamName: data.teamName || room.students[uid]?.teamName || null,
-        teamColor: data.teamColor || room.students[uid]?.teamColor || null,
+        studentSessionId: data.studentSessionId || `session_${effectiveUserId}`,
+        teamId: data.teamId || null,
+        teamName: data.teamName || null,
+        teamColor: data.teamColor || null,
       };
 
-      if (!room.scores[uid]) {
-        room.scores[uid] = {
-          userId: uid,
-          userName: userName || 'Aluno',
+      if (!room.scores[effectiveUserId]) {
+        room.scores[effectiveUserId] = {
+          userId: effectiveUserId,
+          userName: cleanName,
+          nickname: room.students[effectiveUserId].nickname,
+          document: cleanDoc || userRecord.document || undefined,
           score: 0,
           streak: 0,
           totalCorrect: 0,
           lastRoundScore: 0,
           lastRoundCorrect: false,
-          teamId: room.students[uid].teamId,
-          teamName: room.students[uid].teamName,
-          teamColor: room.students[uid].teamColor,
+          teamId: data.teamId || null,
+          teamName: data.teamName || null,
+          teamColor: data.teamColor || null,
         };
       } else {
-        room.scores[uid].userName = userName || room.scores[uid].userName;
+        room.scores[effectiveUserId].userName = cleanName;
+        room.scores[effectiveUserId].nickname = room.students[effectiveUserId].nickname;
+        room.scores[effectiveUserId].document = cleanDoc || userRecord.document || undefined;
       }
 
-      // Sincroniza a avaliação formal ativa caso o aluno entre/reconecte com ela em andamento
       if (room.activeFormalExam) {
         client.emit('formal_exam_launched', room.activeFormalExam);
         client.emit('question_launched', room.activeFormalExam);
       } else if (room.currentQuestionState) {
-        // Sincroniza o quiz gamificado se estiver ativo
         const elapsedSecs = Math.floor((Date.now() - room.currentQuestionState.launchedAt) / 1000);
         const remainingSecs = Math.max(0, room.currentQuestionState.timeLimitSeconds - elapsedSecs);
 
@@ -199,90 +400,74 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       }
     }
 
-    this.broadcastRoomStatus(classId);
+    this.broadcastRoomStatus(primaryRoomKey);
+    if (activeKey !== primaryRoomKey) {
+      this.broadcastRoomStatus(activeKey);
+    }
   }
 
-  @SubscribeMessage('configure_teams')
-  handleConfigureTeams(
-    @MessageBody()
-    data: {
-      classId: string;
-      isTeamMode: boolean;
-      teams: TeamItem[];
-      autoAssign: boolean;
-    },
+  // ⚡ 3. LANÇAMENTO DA AVALIAÇÃO FORMAL
+  @SubscribeMessage('launch_formal_exam')
+  async handleLaunchFormalExam(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
   ) {
-    const room = this.getOrCreateRoom(data.classId);
-    room.isTeamMode = data.isTeamMode;
-    room.teams = data.teams || [];
+    const roomKey = data.pinCode || data.roomKey || data.classId;
+    if (!roomKey) return;
 
-    if (data.isTeamMode && data.autoAssign && room.teams.length > 0) {
-      const studentKeys = Object.keys(room.students);
-      studentKeys.forEach((uid, idx) => {
-        const team = room.teams[idx % room.teams.length];
-        room.students[uid].teamId = team.id;
-        room.students[uid].teamName = team.name;
-        room.students[uid].teamColor = team.color;
+    const room = this.getOrCreateRoom(roomKey);
+    let payload = data;
 
-        if (room.scores[uid]) {
-          room.scores[uid].teamId = team.id;
-          room.scores[uid].teamName = team.name;
-          room.scores[uid].teamColor = team.color;
-        }
+    if (!data.questions || data.questions.length === 0) {
+      const fullExam = await this.prisma.quiz.findUnique({
+        where: { id: data.quizId },
+        include: {
+          questions: {
+            orderBy: { order: 'asc' },
+            include: { options: true },
+          },
+        },
       });
+
+      if (!fullExam) {
+        client.emit('error_message', { message: 'Avaliação não encontrada.' });
+        return;
+      }
+
+      payload = {
+        roomKey,
+        classId: data.classId || undefined,
+        quizId: fullExam.id,
+        id: fullExam.id,
+        quizTitle: fullExam.title,
+        title: fullExam.title,
+        quizType: 'AVALIACAO',
+        type: 'AVALIACAO',
+        durationMinutes: fullExam.durationMinutes || 45,
+        totalQuestions: fullExam.questions.length,
+        questionIndex: 0,
+        timeLimitSeconds: (fullExam.durationMinutes || 45) * 60,
+        questions: fullExam.questions,
+      };
     }
 
-    this.broadcastRoomStatus(data.classId);
-  }
-
-  // ⚡ 1. NOVO HANDLER: Lançamento de Avaliação Formal Contínua
-  @SubscribeMessage('launch_formal_exam')
-  handleLaunchFormalExam(
-    @ConnectedSocket() client: Socket,
-    @MessageBody()
-    data: {
-      classId: string;
-      quizId: string;
-      quizType?: string;
-      quizTitle?: string;
-      durationMinutes?: number;
-      totalQuestions?: number;
-      questions: any[];
-    },
-  ) {
-    if (!data.classId) return;
-
-    const room = this.getOrCreateRoom(data.classId);
-
-    const examPayload = {
-      ...data,
-      quizId: data.quizId,
-      quizType: 'AVALIACAO',
-      quizTitle: data.quizTitle || 'Avaliação Oficial',
-      title: data.quizTitle || 'Avaliação Oficial',
-      durationMinutes: Number(data.durationMinutes) || 45,
-      totalQuestions: data.totalQuestions || data.questions?.length || 1,
-      questions: data.questions || [],
-      questionIndex: 0,
-      type: 'AVALIACAO',
-      timeLimitSeconds: (Number(data.durationMinutes) || 45) * 60,
-    };
-
-    // Guarda estado ativo para novos alunos que conectarem
-    room.activeFormalExam = examPayload;
+    room.activeFormalExam = payload;
     room.currentQuestionState = null;
 
-    // Emite para toda a sala da turma
-    this.server.to(data.classId).emit('formal_exam_launched', examPayload);
-    this.server.to(data.classId).emit('question_launched', examPayload);
+    this.server.to(roomKey).emit('formal_exam_launched', payload);
+    this.server.to(`room_${roomKey}`).emit('formal_exam_launched', payload);
+    this.server.to(roomKey).emit('question_launched', payload);
+    this.server.to(`room_${roomKey}`).emit('question_launched', payload);
   }
 
-  // ⚡ 2. HANDLER: Lançamento de Quiz Gamificado
+  // ⚡ 4. LANÇAMENTO DE QUIZ GAMIFICADO
   @SubscribeMessage('launch_question')
   handleLaunchQuestion(
     @MessageBody()
     data: {
-      classId: string;
+      roomKey?: string;
+      classId?: string;
+      pinCode?: string;
       quizId: string;
       quizType: string;
       quizTitle?: string;
@@ -299,8 +484,11 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       questions?: any[];
     },
   ) {
-    const room = this.getOrCreateRoom(data.classId);
-    room.activeFormalExam = null; // Reseta eventual avaliação formal anterior
+    const roomKey = data.pinCode || data.roomKey || data.classId;
+    if (!roomKey) return;
+
+    const room = this.getOrCreateRoom(roomKey);
+    room.activeFormalExam = null;
     room.currentTotalTime = Number(data.timeLimitSeconds) || 30;
     room.currentQuestionIndex = Number(data.questionIndex) || 0;
     room.roundOptionVotes = {};
@@ -359,19 +547,23 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       });
     }
 
-    this.server.to(data.classId).emit('question_launched', questionPayload);
+    this.server.to(roomKey).emit('question_launched', questionPayload);
+    this.server.to(`room_${roomKey}`).emit('question_launched', questionPayload);
 
-    this.server.to(data.classId).emit('answer_received_count', {
-      classId: data.classId,
+    this.server.to(roomKey).emit('answer_received_count', {
+      roomKey,
       totalAnswers: 0,
     });
   }
 
+  // ⚡ 5. ENVIO DE RESPOSTA
   @SubscribeMessage('submit_answer')
   handleSubmitAnswer(
     @MessageBody()
     data: {
-      classId: string;
+      roomKey?: string;
+      classId?: string;
+      pinCode?: string;
       userId: string;
       userName: string;
       questionIndex: number;
@@ -383,7 +575,10 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       teamId?: string;
     },
   ) {
-    const room = this.getOrCreateRoom(data.classId);
+    const roomKey = data.pinCode || data.roomKey || data.classId;
+    if (!roomKey) return;
+
+    const room = this.getOrCreateRoom(roomKey);
     const uid = String(data.userId);
     const qIndex = Number(data.questionIndex) ?? room.currentQuestionIndex;
 
@@ -415,6 +610,8 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       room.scores[uid] = {
         userId: uid,
         userName: data.userName || room.students[uid]?.userName || 'Aluno',
+        nickname: room.students[uid]?.nickname || 'Jogador',
+        document: room.students[uid]?.document,
         score: 0,
         streak: 0,
         totalCorrect: 0,
@@ -431,7 +628,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       const speedRatio = Math.max(0, Math.min(1, timeRemaining / totalTime));
 
       const basePoints = Math.round(500 + 500 * speedRatio);
-
       room.scores[uid].streak = (room.scores[uid].streak || 0) + 1;
       const currentStreak = room.scores[uid].streak;
 
@@ -456,24 +652,30 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       (h) => h[qIndex] !== undefined,
     ).length;
 
-    this.server.to(data.classId).emit('answer_received_count', {
-      classId: data.classId,
+    this.server.to(roomKey).emit('answer_received_count', {
+      roomKey,
       totalAnswers: currentQAnswers,
     });
   }
 
+  // ⚡ 6. FINALIZAR QUESTÃO / PLACAR COM CONSOLIDAÇÃO NA ESCALA OFICIAL (0,0 A 10,0)
   @SubscribeMessage('finish_question')
   async handleFinishQuestion(
     @MessageBody()
     data: {
-      classId: string;
+      roomKey?: string;
+      classId?: string;
+      pinCode?: string;
       totalQuestions?: number;
       questionIndex?: number;
       isLastQuestion?: boolean;
     },
   ) {
-    const room = this.getOrCreateRoom(data.classId);
-    const quizId = room.currentQuestionState?.quizId;
+    const roomKey = data.pinCode || data.roomKey || data.classId;
+    if (!roomKey) return;
+
+    const room = this.getOrCreateRoom(roomKey);
+    const quizId = room.currentQuestionState?.quizId || room.quizId;
     const correctIndex = room.currentQuestionState?.correctIndex;
     const currentQIndex = Number(data.questionIndex) ?? room.currentQuestionIndex;
 
@@ -536,82 +738,49 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
     room.currentQuestionState = null;
     const totalQuestions = Number(data.totalQuestions) || currentQIndex + 1 || 1;
 
-    let quizQuestions: any[] = [];
-    if (quizId) {
-      try {
-        const quizData = await this.prisma.quiz.findUnique({
-          where: { id: quizId },
-          include: { questions: { orderBy: { order: 'asc' } } },
-        });
-        quizQuestions = quizData?.questions || [];
-      } catch (e) {
-        console.warn('Não foi possível carregar as questões do quiz:', e);
-      }
-    }
-
+    // ⚡ Consolidação rigorosa para a escala 0 a 10
     const leaderboardPromises = Object.values(room.scores).map(async (s) => {
       const rawUserHistory = room.answersHistory[s.userId] || {};
       const completeAnswersMatrix: { [questionIndex: number]: boolean } = {};
-
       let calculatedCorrectCount = 0;
 
       for (let qIdx = 0; qIdx < totalQuestions; qIdx++) {
         const answeredCorrectly = rawUserHistory[qIdx] === true;
         completeAnswersMatrix[qIdx] = answeredCorrectly;
-
-        if (answeredCorrectly) {
-          calculatedCorrectCount += 1;
-        }
+        if (answeredCorrectly) calculatedCorrectCount += 1;
       }
 
-      const calculatedGrade = Number(
-        ((calculatedCorrectCount / totalQuestions) * 10).toFixed(1),
-      );
+      // ⚡⚡ PONTUAÇÃO DO QUIZ NA ESCALA 0 A 10 (100% acertos = 10.0) ⚡⚡
+      let calculatedGrade = 0.0;
+      if (totalQuestions > 0) {
+        if (calculatedCorrectCount === totalQuestions) {
+          calculatedGrade = 10.0;
+        } else {
+          calculatedGrade = Number(((calculatedCorrectCount / totalQuestions) * 10.0).toFixed(1));
+        }
+      }
+      calculatedGrade = Math.max(0.0, Math.min(10.0, calculatedGrade));
+      const isApproved = calculatedGrade >= 7.0;
 
-      if (quizId && data.classId) {
+      if (quizId) {
         try {
-          const enrollments = await this.prisma.enrollment.findMany({
-            where: { classId: data.classId },
-            include: { user: true },
+          const effectiveClassId = room.classId || undefined;
+          const userRecord = await (this.prisma.user as any).findFirst({
+            where: {
+              OR: [
+                { id: s.userId },
+                { document: s.document || undefined },
+                { name: { equals: s.userName, mode: 'insensitive' } },
+              ],
+            },
           });
 
-          let targetUser: any = enrollments.find(
-            (e) =>
-              e.userId === s.userId ||
-              e.user.id === s.userId ||
-              e.user.email?.toLowerCase() === s.userId?.toLowerCase() ||
-              e.user.name?.trim().toLowerCase() === s.userName?.trim().toLowerCase(),
-          )?.user;
-
-          if (!targetUser) {
-            targetUser = await this.prisma.user.findFirst({
-              where: {
-                OR: [
-                  { id: s.userId },
-                  { email: s.userId },
-                  { name: { equals: s.userName, mode: 'insensitive' } },
-                ],
-              },
-            });
-          }
-
-          if (targetUser) {
-            const classModule = await this.prisma.classModule.findFirst({
-              where: { classId: data.classId },
-            });
-
-            if (classModule?.subjectId) {
-              await this.prisma.quiz.update({
-                where: { id: quizId },
-                data: { subjectId: classModule.subjectId },
-              }).catch(() => {});
-            }
-
+          if (userRecord) {
             const existingSub = await this.prisma.examSubmission.findFirst({
               where: {
                 quizId,
-                userId: targetUser.id,
-                classId: data.classId,
+                userId: userRecord.id,
+                ...(effectiveClassId ? { classId: effectiveClassId } : {}),
               },
             });
 
@@ -622,26 +791,48 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
                   totalScore: calculatedGrade,
                   totalCorrect: calculatedCorrectCount,
                   totalQuestions,
-                  isApproved: calculatedGrade >= 7.0,
+                  isApproved,
                 },
               });
             } else {
               await this.prisma.examSubmission.create({
                 data: {
                   quizId,
-                  userId: targetUser.id,
-                  classId: data.classId,
+                  userId: userRecord.id,
+                  classId: effectiveClassId,
                   totalScore: calculatedGrade,
                   totalCorrect: calculatedCorrectCount,
                   totalQuestions,
-                  isApproved: calculatedGrade >= 7.0,
+                  isApproved,
                   timeSpentSeconds: 0,
                 },
               });
             }
+
+            const isLast = Boolean(data.isLastQuestion || currentQIndex + 1 >= totalQuestions);
+            if (isLast) {
+              const livePayload = {
+                quizId,
+                classId: effectiveClassId,
+                userId: userRecord.id,
+                userName: s.userName,
+                nickname: s.nickname,
+                document: s.document,
+                totalScore: calculatedGrade,
+                totalCorrect: calculatedCorrectCount,
+                totalQuestions,
+                isApproved,
+                timeSpentSeconds: 0,
+                submittedAt: new Date(),
+              };
+              const targetRoom = effectiveClassId || roomKey;
+              this.server.to(targetRoom).emit('exam_submitted_live', livePayload);
+              this.server.to(`room_${targetRoom}`).emit('exam_submitted_live', livePayload);
+              this.server.emit('exam_submitted_live', livePayload);
+            }
           }
         } catch (err) {
-          console.error('[SessionGateway] Erro ao persistir submissão:', err);
+          console.error('[SessionGateway] Erro ao consolidar nota acadêmica:', err);
         }
       }
 
@@ -649,6 +840,8 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         rank: 1,
         userId: s.userId,
         userName: s.userName,
+        nickname: s.nickname,
+        document: s.document,
         teamName: room.students[s.userId]?.teamName || s.teamName || null,
         teamColor: room.students[s.userId]?.teamColor || s.teamColor || null,
         score: s.score,
@@ -657,22 +850,21 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         totalCorrect: calculatedCorrectCount,
         totalQuestions,
         totalGrade: calculatedGrade,
-        isApproved: calculatedGrade >= 7.0,
+        isApproved,
         isCorrect: s.lastRoundCorrect,
         answersMap: completeAnswersMatrix,
-        answersMatrix: completeAnswersMatrix,
       };
     });
 
     const leaderboard = await Promise.all(leaderboardPromises);
-
     leaderboard.sort((a, b) => b.score - a.score);
     leaderboard.forEach((item, index) => {
       item.rank = index + 1;
     });
 
-    this.server.to(data.classId).emit('question_ended', {
-      classId: data.classId,
+    this.server.to(roomKey).emit('question_ended', {
+      roomKey,
+      classId: room.classId,
       isTeamMode: room.isTeamMode,
       leaderboard,
       answerStats,
@@ -680,17 +872,128 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
     });
   }
 
+  
+
+  // ⚡ 7. VINCULAR SESSÃO E RESULTADOS A UMA TURMA A QUALQUER MOMENTO
+  @SubscribeMessage('bind_session_to_class')
+  async handleBindSessionToClass(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomKey: string; classId: string },
+  ) {
+    const room = this.rooms[data.roomKey];
+    if (!room) {
+      client.emit('error_message', { message: 'Sessão não encontrada.' });
+      return;
+    }
+
+    room.classId = data.classId;
+
+    if (room.pinCode) {
+      await this.prisma.quizSession.updateMany({
+        where: { pinCode: room.pinCode },
+        data: { classId: data.classId },
+      });
+    }
+
+    for (const student of Object.values(room.students)) {
+      if (student.document) {
+        const user = await (this.prisma.user as any).findFirst({
+          where: {
+            OR: [
+              { document: student.document },
+              { email: `${student.document}@aluno.myclasspluss.com` },
+            ],
+          },
+        });
+
+        if (user) {
+          await this.prisma.enrollment.upsert({
+            where: {
+              userId_classId: {
+                userId: user.id,
+                classId: data.classId,
+              },
+            },
+            create: {
+              userId: user.id,
+              classId: data.classId,
+            },
+            update: {},
+          });
+
+          if (room.quizId) {
+            await (this.prisma.examSubmission as any).updateMany({
+              where: {
+                quizId: room.quizId,
+                userId: user.id,
+              },
+              data: { classId: data.classId },
+            });
+          }
+        }
+      }
+    }
+
+    client.emit('session_bound_success', {
+      classId: data.classId,
+      enrolledCount: Object.keys(room.students).length,
+    });
+
+    this.broadcastRoomStatus(data.roomKey);
+  }
+
+  @SubscribeMessage('configure_teams')
+  handleConfigureTeams(
+    @MessageBody()
+    data: {
+      roomKey?: string;
+      classId?: string;
+      isTeamMode: boolean;
+      teams: TeamItem[];
+      autoAssign: boolean;
+    },
+  ) {
+    const key = data.roomKey || data.classId;
+    if (!key) return;
+
+    const room = this.getOrCreateRoom(key);
+    room.isTeamMode = data.isTeamMode;
+    room.teams = data.teams || [];
+
+    if (data.isTeamMode && data.autoAssign && room.teams.length > 0) {
+      const studentKeys = Object.keys(room.students);
+      studentKeys.forEach((uid, idx) => {
+        const team = room.teams[idx % room.teams.length];
+        room.students[uid].teamId = team.id;
+        room.students[uid].teamName = team.name;
+        room.students[uid].teamColor = team.color;
+
+        if (room.scores[uid]) {
+          room.scores[uid].teamId = team.id;
+          room.scores[uid].teamName = team.name;
+          room.scores[uid].teamColor = team.color;
+        }
+      });
+    }
+
+    this.broadcastRoomStatus(key);
+  }
+
   @SubscribeMessage('close_room')
-  handleCloseRoom(@MessageBody() data: { classId: string }) {
-    if (this.rooms[data.classId]) {
-      delete this.rooms[data.classId];
-      this.server.to(data.classId).emit('room_closed');
+  handleCloseRoom(@MessageBody() data: { roomKey?: string; classId?: string }) {
+    const key = data.roomKey || data.classId;
+    if (key && this.rooms[key]) {
+      delete this.rooms[key];
+      this.server.to(key).emit('room_closed');
     }
   }
 
   @SubscribeMessage('reset_leaderboard')
-  handleResetLeaderboard(@MessageBody() data: { classId: string }) {
-    const room = this.getOrCreateRoom(data.classId);
+  handleResetLeaderboard(@MessageBody() data: { roomKey?: string; classId?: string }) {
+    const key = data.roomKey || data.classId;
+    if (!key) return;
+
+    const room = this.getOrCreateRoom(key);
     room.currentQuestionState = null;
     room.activeFormalExam = null;
     room.scores = {};
@@ -701,6 +1004,8 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       room.scores[uid] = {
         userId: uid,
         userName: room.students[uid].userName,
+        nickname: room.students[uid].nickname,
+        document: room.students[uid].document,
         score: 0,
         streak: 0,
         totalCorrect: 0,
@@ -709,9 +1014,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         teamId: room.students[uid].teamId || null,
       };
     });
-
-    this.server.to(data.classId).emit('leaderboard_reset', {
-      classId: data.classId,
-    });
+    this.server.to(key).emit('leaderboard_reset', { roomKey: key });
   }
 }
