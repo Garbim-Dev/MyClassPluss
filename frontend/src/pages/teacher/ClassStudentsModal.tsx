@@ -11,10 +11,10 @@ import {
   Loader2, 
   CheckCircle2, 
   AlertCircle,
-  Mail,
   User,
   Save,
-  QrCode
+  Smile,
+  IdCard,
 } from 'lucide-react';
 
 interface ClassStudentsModalProps {
@@ -23,6 +23,8 @@ interface ClassStudentsModalProps {
   classId: string | null;
   classCode: string;
   courseName?: string;
+  onStudentEnrolled?: () => void;
+  onStudentRemoved?: () => void;
 }
 
 export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
@@ -31,22 +33,25 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
   classId,
   classCode,
   courseName = 'Treinamento Técnico',
+  onStudentEnrolled,
+  onStudentRemoved,
 }) => {
   const [students, setStudents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  // Estados de controle dos novos modais de escolha e QR Code ao vivo
+  // Controle dos modais secundários e formulário manual
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [isLiveQrModalOpen, setIsLiveQrModalOpen] = useState(false);
-  const [showManualForm, setShowManualForm] = useState(false); // Controla se o form manual está visível na tela
+  const [showManualForm, setShowManualForm] = useState(false);
 
-  // Formulário de Cadastro / Edição Manual de Aluno
+  // Estados do Formulário Manual Padronizados com o StudentJoin.tsx
   const [editingEnrollmentId, setEditingEnrollmentId] = useState<string | null>(null);
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [document, setDocument] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const fetchStudents = async () => {
@@ -56,9 +61,8 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
       setError('');
       const res = await api.get(`/academic/classes/${classId}/students`);
       
-      // ⚡ Ordena os alunos alfabeticamente pelo nome (case-insensitive)
-      const sortedStudents = res.data.sort((a: any, b: any) => 
-        a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'accent' })
+      const sortedStudents = (res.data || []).sort((a: any, b: any) => 
+        (a.name || '').localeCompare(b.name || '', 'pt-BR', { sensitivity: 'accent' })
       );
 
       setStudents(sortedStudents);
@@ -83,22 +87,54 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
     setEditingEnrollmentId(null);
     setEditingStudentId(null);
     setName('');
-    setEmail('');
+    setNickname('');
+    setDocument('');
   };
 
   const handleSaveStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!classId) return;
+
+    const cleanFullName = name.trim();
+    const cleanNick = (nickname.trim() || cleanFullName.split(' ')[0] || 'Aluno').trim();
+    const cleanDoc = document.trim().replace(/\D/g, '') || document.trim();
+
+    if (!cleanFullName) {
+      setError('Nome Completo é obrigatório.');
+      return;
+    }
+
+    if (!cleanDoc) {
+      setError('CPF ou Matrícula é obrigatório.');
+      return;
+    }
+
     setSubmitting(true);
     setError('');
 
+    // Gera o e-mail padronizado e a senha padrão idênticos ao fluxo do StudentJoin
+    const syntheticEmail = `${cleanDoc}@aluno.myclasspluss.com`;
+
     try {
       if (editingStudentId) {
-        await api.put(`/academic/students/${editingStudentId}`, { name, email });
+        await api.put(`/academic/students/${editingStudentId}`, { 
+          name: cleanFullName,
+          nickname: cleanNick,
+          document: cleanDoc,
+          email: syntheticEmail,
+        });
         setSuccessMsg('Dados do aluno atualizados com sucesso!');
       } else {
-        await api.post(`/academic/classes/${classId}/students`, { name, email });
+        await api.post(`/academic/classes/${classId}/students`, { 
+          name: cleanFullName,
+          nickname: cleanNick,
+          document: cleanDoc,
+          email: syntheticEmail,
+          password: '123456',
+          role: 'ALUNO',
+        });
         setSuccessMsg('Aluno matriculado com sucesso!');
+        if (onStudentEnrolled) onStudentEnrolled();
       }
 
       resetForm();
@@ -114,10 +150,11 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
 
   const handleStartEdit = (st: any) => {
     setEditingEnrollmentId(st.enrollmentId);
-    setEditingStudentId(st.studentId);
-    setName(st.name);
-    setEmail(st.email);
-    setShowManualForm(true); // Abre o formulário para edição
+    setEditingStudentId(st.studentId || st.id || st.userId);
+    setName(st.name || '');
+    setNickname(st.nickname || st.name?.split(' ')[0] || '');
+    setDocument(st.document || st.enrollmentNumber || st.registration || (st.email ? st.email.split('@')[0] : ''));
+    setShowManualForm(true);
   };
 
   const handleRemoveStudent = async (enrollmentId: string) => {
@@ -126,6 +163,7 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
     try {
       await api.delete(`/academic/enrollments/${enrollmentId}`);
       setSuccessMsg('Aluno removido da turma com sucesso!');
+      if (onStudentRemoved) onStudentRemoved();
       fetchStudents();
       setTimeout(() => setSuccessMsg(''), 3000);
     } catch (err) {
@@ -158,7 +196,6 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
               </p>
             </div>
 
-            {/* ⚡ BOTÃO QUE ABRE O MODAL DE ESCOLHA DE MATRÍCULA */}
             <button
               type="button"
               onClick={() => setIsChoiceModalOpen(true)}
@@ -183,9 +220,11 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
             </div>
           )}
 
-          {/* FORMULÁRIO DE CADASTRO / EDIÇÃO MANUAL (Exibido apenas quando solicitado) */}
+          {/* ========================================================================= */}
+          {/* ⚡ FORMULÁRIO DE CADASTRO / EDIÇÃO MANUAL (PADRÃO STUDENTJOIN) */}
+          {/* ========================================================================= */}
           {showManualForm && (
-            <form onSubmit={handleSaveStudent} className="bg-[#0f172a] border border-slate-800 p-5 rounded-2xl space-y-3 animate-fade-in">
+            <form onSubmit={handleSaveStudent} className="bg-[#0f172a] border border-slate-800 p-5 rounded-2xl space-y-4 animate-fade-in">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-black uppercase tracking-wide text-slate-200 flex items-center gap-1.5">
                   <UserPlus className="w-4 h-4 text-emerald-400" />
@@ -203,31 +242,63 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="relative">
-                  <User className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="text"
-                    required
-                    placeholder="Nome Completo do Aluno"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full bg-[#0b1120] border border-slate-800 focus:border-indigo-500 rounded-xl pl-9 pr-4 py-2.5 text-xs text-white focus:outline-none"
-                  />
+              <div className="space-y-3">
+                {/* 1. Nome Completo Oficial */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    Nome Completo (Registro Oficial) *
+                  </label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Carlos Eduardo de Oliveira"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full bg-[#0b1120] border border-slate-800 focus:border-indigo-500 rounded-xl pl-9 pr-4 py-2 text-xs text-white focus:outline-none transition-colors"
+                    />
+                  </div>
                 </div>
 
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3.5" />
-                  <input
-                    type="email"
-                    required
-                    placeholder="E-mail institucional/pessoal"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full bg-[#0b1120] border border-slate-800 focus:border-indigo-500 rounded-xl pl-9 pr-4 py-2.5 text-xs text-white focus:outline-none"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* 2. Apelido / Telão */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 mb-1 flex items-center gap-1.5">
+                      <Smile className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Apelido / Nickname (Exibido no Telão) *</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Cadu, Edu, Relâmpago"
+                      value={nickname}
+                      onChange={(e) => setNickname(e.target.value)}
+                      className="w-full bg-[#0b1120] border border-slate-800 focus:border-indigo-500 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none font-bold"
+                    />
+                  </div>
+
+                  {/* 3. CPF ou Matrícula Funcional */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 mb-1 flex items-center gap-1.5">
+                      <IdCard className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>CPF ou Matrícula Funcional *</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: 0023419 ou 000.000.000-00"
+                      value={document}
+                      onChange={(e) => setDocument(e.target.value)}
+                      className="w-full bg-[#0b1120] border border-slate-800 focus:border-indigo-500 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none font-mono"
+                    />
+                  </div>
                 </div>
               </div>
+
+              <span className="text-[10px] text-slate-500 block">
+                O e-mail de serviço institucional ({document ? `${document.replace(/\D/g, '') || document}@aluno.myclasspluss.com` : 'documento@aluno.myclasspluss.com'}) é sintetizado automaticamente.
+              </span>
 
               <button
                 type="submit"
@@ -274,39 +345,52 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
               </div>
             ) : (
               <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                {students.map((st) => (
-                  <div 
-                    key={st.enrollmentId}
-                    className="bg-[#0f172a] border border-slate-800/80 p-3.5 rounded-xl flex items-center justify-between text-xs hover:border-slate-700 transition-colors"
-                  >
-                    <div className="space-y-0.5 truncate pr-2">
-                      <p className="font-bold text-white truncate">{st.name}</p>
-                      <p className="text-slate-400 text-[11px] truncate font-mono">{st.email}</p>
-                    </div>
+                {students.map((st) => {
+                  const displayDoc = st.document || st.enrollmentNumber || st.registration || (st.email ? st.email.split('@')[0] : 'S/N');
+                  const displayNick = st.nickname || st.name?.split(' ')[0] || 'Aluno';
 
-                    <div className="flex items-center gap-2.5 shrink-0">
-                      <span className="text-[10px] text-slate-500 hidden sm:inline font-mono">
-                        Entrada: {new Date(st.joinedAt).toLocaleDateString('pt-BR')}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleStartEdit(st)}
-                        className="p-1.5 text-slate-400 hover:text-amber-400 hover:bg-amber-950/40 rounded-lg transition-colors cursor-pointer"
-                        title="Editar aluno"
-                      >
-                        <Edit3 className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveStudent(st.enrollmentId)}
-                        className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                        title="Remover aluno da turma"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                  return (
+                    <div 
+                      key={st.enrollmentId}
+                      className="bg-[#0f172a] border border-slate-800/80 p-3 rounded-xl flex items-center justify-between text-xs hover:border-slate-700 transition-colors"
+                    >
+                      <div className="space-y-0.5 truncate pr-2">
+                        <div className="flex items-center gap-2">
+                          <p className="font-bold text-white truncate">{st.name}</p>
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300">
+                            {displayNick}
+                          </span>
+                        </div>
+                        <p className="text-slate-400 text-[11px] font-mono flex items-center gap-1.5">
+                          <IdCard className="w-3 h-3 text-emerald-400 shrink-0" />
+                          <span>Doc/Matrícula: <strong className="text-slate-200">{displayDoc}</strong></span>
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        <span className="text-[10px] text-slate-500 hidden sm:inline font-mono">
+                          Entrada: {st.joinedAt ? new Date(st.joinedAt).toLocaleDateString('pt-BR') : '--'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEdit(st)}
+                          className="p-1.5 text-slate-400 hover:text-amber-400 hover:bg-amber-950/40 rounded-lg transition-colors cursor-pointer"
+                          title="Editar aluno"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveStudent(st.enrollmentId)}
+                          className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                          title="Remover aluno da turma"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -314,25 +398,25 @@ export const ClassStudentsModal: React.FC<ClassStudentsModalProps> = ({
         </div>
       </div>
 
-      {/* ⚡ 1. MODAL DE ESCOLHA (Manual vs QR Code) */}
+      {/* 1. MODAL DE ESCOLHA (Manual vs QR Code) */}
       <EnrollmentChoiceModal
         isOpen={isChoiceModalOpen}
         onClose={() => setIsChoiceModalOpen(false)}
         classCode={classCode}
         onSelectManual={() => {
-          setShowManualForm(true); // Abre o formulário manual na tela principal
+          setShowManualForm(true);
         }}
         onSelectQrCode={() => {
-          setIsLiveQrModalOpen(true); // Abre o painel ao vivo com QR Code
+          setIsLiveQrModalOpen(true);
         }}
       />
 
-      {/* ⚡ 2. PAINEL DE MATRÍCULA AO VIVO (QR Code + Lista em Tempo Real) */}
+      {/* 2. PAINEL DE MATRÍCULA AO VIVO (QR Code + Lista em Tempo Real) */}
       <LiveQrEnrollmentModal
         isOpen={isLiveQrModalOpen}
         onClose={() => {
           setIsLiveQrModalOpen(false);
-          fetchStudents(); // Atualiza a lista principal ao fechar o painel QR Code
+          fetchStudents();
         }}
         classId={classId || ''}
         classCode={classCode}

@@ -126,22 +126,23 @@ export const StudentJoin: React.FC = () => {
     return sessionStorage.getItem('@MyClassPluss:currentClassId') || '';
   });
 
-  // 2. Extração do Código visível (prioriza ?code=, ?pin= ou ?pinCode=)
+  // 2. Extração do Código visível
   const [classCodeInput, setClassCodeInput] = useState<string>(() => {
     const codeParam = searchParams.get('code') || searchParams.get('pin') || searchParams.get('pinCode') || searchParams.get('classCode');
     return codeParam ? decodeURIComponent(codeParam).trim().toUpperCase() : '';
   });
 
-  // ⚡ Trava ativada apenas se houver um código válido preenchido
   const [isLockedByQr, setIsLockedByQr] = useState<boolean>(() => {
     const rawCode = searchParams.get('code') || searchParams.get('pin') || searchParams.get('pinCode') || searchParams.get('classCode');
     return Boolean(rawCode && rawCode.trim().length > 0);
   });
 
-  // ⚡ Campos de identificação do aluno
-  const [name, setName] = useState('');
+  // ⚡ Campos de identificação do aluno com recuperação de memórias anteriores
+  const [name, setName] = useState(() => localStorage.getItem('@MyClassPluss:studentName') || '');
   const [nickname, setNickname] = useState('');
-  const [document, setDocument] = useState(() => localStorage.getItem(SAVED_DOC_KEY) || '');
+  const [document, setDocument] = useState(() => {
+    return localStorage.getItem('@MyClassPluss:studentDocument') || localStorage.getItem(SAVED_DOC_KEY) || '';
+  });
 
   const [studentUser, setStudentUser] = useState(() => {
     const local = localStorage.getItem(SESSION_KEY);
@@ -198,7 +199,6 @@ export const StudentJoin: React.FC = () => {
 
   const wakeLockRef = useRef<any>(null);
 
-  // ⚡ Se o link trouxe o classId sem o código legível, consulta os dados da turma para auto-preencher
   useEffect(() => {
     if (classId && !classCodeInput) {
       const fetchClassDetails = async () => {
@@ -267,7 +267,6 @@ export const StudentJoin: React.FC = () => {
     };
   }, [studentUser]);
 
-  // Sockets & Keep-Alive com reconexão automática
   useEffect(() => {
     const activeRoomKey = pinCode || classId || classCodeInput;
     if (!studentUser || !activeRoomKey) return;
@@ -370,7 +369,6 @@ export const StudentJoin: React.FC = () => {
     };
 
     const handleQuestionStarted = (data: QuestionData) => {
-      // Se for avaliação formal, direciona para a prova
       if (
         data.quizType === 'AVALIACAO' ||
         data.quizType === 'AVALIAÇAO' ||
@@ -380,7 +378,6 @@ export const StudentJoin: React.FC = () => {
         return;
       }
 
-      // ⚡ Se for Quiz Gamificado, LIMPA qualquer trava residual de prova anterior:
       setRoundFinished(false);
       setRoundResult(null);
       setMyRankInfo(null);
@@ -454,7 +451,7 @@ export const StudentJoin: React.FC = () => {
     return () => clearInterval(timer);
   }, [currentQuestion, roundFinished, countdown]);
 
-  // ⚡ Fluxo Unificado de Entrada
+  // ⚡ Fluxo Unificado de Entrada (com gravação persistente imediata para o Boletim)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -513,16 +510,24 @@ export const StudentJoin: React.FC = () => {
         localStorage.setItem('@MyClassPluss:token', res.data.token);
       }
 
-      if (cleanDoc) {
-        localStorage.setItem(SAVED_DOC_KEY, cleanDoc);
-      }
-
       const generatedUser = {
         id: String(res.data?.user?.id || cleanDoc || `std_${Date.now()}`),
         name: cleanFullName,
         nickname: cleanNick,
         document: cleanDoc,
       };
+
+      // ⚡⚡ GRAVAÇÃO MULTI-CHAVE: Garante que o StudentAcademicPortal sempre ache o aluno
+      if (cleanDoc) {
+        localStorage.setItem(SAVED_DOC_KEY, cleanDoc);
+        localStorage.setItem('@MyClassPluss:studentDocument', cleanDoc);
+        localStorage.setItem('studentDocument', cleanDoc);
+      }
+      localStorage.setItem('@MyClassPluss:studentName', cleanFullName);
+      localStorage.setItem('studentName', cleanFullName);
+      localStorage.setItem('@MyClassPluss:studentId', generatedUser.id);
+      localStorage.setItem('@MyClassPluss:user', JSON.stringify(generatedUser));
+      localStorage.setItem('user', JSON.stringify(generatedUser));
 
       const generatedSessionId = `student_${generatedUser.id}_${Date.now()}`;
       sessionStorage.setItem('@MyClassPluss:studentSessionId', generatedSessionId);

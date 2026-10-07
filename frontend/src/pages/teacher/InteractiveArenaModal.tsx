@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import confetti from 'canvas-confetti';
 import {
   X,
@@ -101,12 +102,11 @@ interface InteractiveArenaModalProps {
   sliderUnit?: string;
 }
 
-// ⚡ Algoritmo Fisher-Yates para embaralhamento uniforme
 function shuffleArray<T>(array: T[]): T[] {
   const result = [...array];
   for (let i = result.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
+    [result[j], result[j]] = [result[j], result[i]];
   }
   return result;
 }
@@ -151,7 +151,6 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
 
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isRandomizedSession, setIsRandomizedSession] = useState(true);
   const [shuffledPuzzleSteps, setShuffledPuzzleSteps] = useState<{ text: string; correctIndex: number }[]>([]);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const tensionAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -159,7 +158,6 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
   const [showingStats, setShowingStats] = useState<boolean>(false);
   const [statsTimer, setStatsTimer] = useState<number>(8);
 
-  // ⚡ Normaliza a URL da imagem para o IP e porta dinâmicos da máquina atual
   const formatImageUrl = (url?: string | null): string => {
     if (!url) return '';
     let target = url.trim();
@@ -180,15 +178,22 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
   const rawImage = quizImage || currentQuestionData?.imageUrl;
   const activeImage = formatImageUrl(rawImage);
 
+  // ⚡ Bloqueia o scroll do body quando a arena abre para isolar como tela limpa
   useEffect(() => {
     if (isOpen) {
+      document.body.style.overflow = 'hidden';
       if (currentQuestionIndex === 0) {
         setArenaStage('CONFIG');
         setWarmupSeconds(8);
       } else {
         setArenaStage('PLAYING');
       }
+    } else {
+      document.body.style.overflow = '';
     }
+    return () => {
+      document.body.style.overflow = '';
+    };
   }, [isOpen]);
 
   useEffect(() => {
@@ -363,7 +368,6 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
   const progressPercent = totalTime > 0 ? (countdown / totalTime) * 100 : 0;
   const hasNextQuestion = currentQuestionIndex + 1 < totalQuestions;
 
-  // Atalhos de Teclado (Hotkeys)
   useEffect(() => {
     if (!isOpen) return;
 
@@ -423,38 +427,48 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
     onForceFinishTime,
   ]);
 
-  if (!isOpen) return null;
-
   const getThemeClasses = () => {
     switch (selectedTheme) {
       case 'GRAPHITE':
         return {
-          root: 'bg-zinc-950 text-zinc-100',
-          header: 'border-zinc-800 bg-zinc-900/60',
-          card: 'bg-zinc-900/80 border-zinc-800',
-          footer: 'border-zinc-800 text-zinc-500',
+          root: 'bg-[#0f1117] text-zinc-100',
+          header: 'border-zinc-800 bg-zinc-900/80 backdrop-blur-md',
+          card: 'bg-zinc-900/90 border-zinc-800 shadow-2xl',
+          footer: 'border-zinc-800 text-zinc-400 bg-zinc-950/80',
+          patternOpacity: 'opacity-[0.06]',
+          patternFilter: 'grayscale(1) brightness(1.8)',
+          glowTop: 'from-zinc-500/10 to-transparent',
         };
       case 'CLEAN_LIGHT':
         return {
           root: 'bg-slate-100 text-slate-900',
-          header: 'border-slate-300 bg-white/90 shadow-sm',
-          card: 'bg-white border-slate-300 shadow-md',
-          footer: 'border-slate-300 text-slate-500',
+          header: 'border-slate-300 bg-white/90 shadow-sm backdrop-blur-md',
+          card: 'bg-white border-slate-300 shadow-xl',
+          footer: 'border-slate-300 text-slate-600 bg-white/90',
+          patternOpacity: 'opacity-[0.07]',
+          patternFilter: 'brightness(0.3) contrast(1.2)',
+          glowTop: 'from-blue-400/15 to-transparent',
         };
       case 'NEON_ARENA':
         return {
-          root: 'bg-gradient-to-br from-purple-950 via-slate-950 to-indigo-950 text-purple-100',
-          header: 'border-purple-800/80 bg-slate-950/70',
-          card: 'bg-slate-900/80 border-purple-500/40 shadow-purple-950/40',
-          footer: 'border-purple-800/60 text-purple-400',
+          root: 'bg-[#0d0722] text-purple-100',
+          header: 'border-purple-800/60 bg-slate-950/80 backdrop-blur-md',
+          card: 'bg-slate-900/90 border-purple-500/40 shadow-purple-950/50 shadow-2xl',
+          footer: 'border-purple-800/60 text-purple-300 bg-slate-950/80',
+          patternOpacity: 'opacity-[0.08]',
+          patternFilter: 'hue-rotate(240deg) brightness(1.6)',
+          glowTop: 'from-purple-600/20 via-pink-600/10 to-transparent',
         };
       case 'CYBER_BLUE':
       default:
         return {
-          root: 'bg-[#070b19] text-slate-100',
-          header: 'border-slate-800 bg-slate-950/60',
-          card: 'bg-slate-900/80 border-slate-800 shadow-xl',
-          footer: 'border-slate-800 text-slate-500',
+          root: 'bg-[#060919] text-slate-100',
+          header: 'border-slate-800 bg-slate-950/80 backdrop-blur-md',
+          card: 'bg-slate-900/90 border-slate-800 shadow-2xl',
+          footer: 'border-slate-800 text-slate-400 bg-slate-950/80',
+          patternOpacity: 'opacity-[0.07]',
+          patternFilter: 'brightness(1.5)',
+          glowTop: 'from-blue-600/20 via-indigo-600/10 to-transparent',
         };
     }
   };
@@ -490,7 +504,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
       case 'MULTIPLE_CHOICE':
         return (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 w-full">
-            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-red-950/40 border-red-500/50 shadow-lg">
+            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-red-950/50 border-red-500/60 shadow-lg backdrop-blur-sm">
               <span className="w-8 h-8 rounded-xl bg-red-600 flex items-center justify-center font-black text-white text-sm shrink-0 shadow-md">
                 ▲
               </span>
@@ -499,7 +513,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
               </span>
             </div>
 
-            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-blue-950/40 border-blue-500/50 shadow-lg">
+            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-blue-950/50 border-blue-500/60 shadow-lg backdrop-blur-sm">
               <span className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center font-black text-white text-sm shrink-0 shadow-md">
                 ◆
               </span>
@@ -508,7 +522,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
               </span>
             </div>
 
-            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-amber-950/40 border-amber-500/50 shadow-lg">
+            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-amber-950/50 border-amber-500/60 shadow-lg backdrop-blur-sm">
               <span className="w-8 h-8 rounded-xl bg-amber-500 flex items-center justify-center font-black text-slate-950 text-sm shrink-0 shadow-md">
                 ●
               </span>
@@ -517,7 +531,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
               </span>
             </div>
 
-            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-emerald-950/40 border-emerald-500/50 shadow-lg">
+            <div className="min-h-[82px] p-4 rounded-2xl border-2 flex items-center gap-3.5 bg-emerald-950/50 border-emerald-500/60 shadow-lg backdrop-blur-sm">
               <span className="w-8 h-8 rounded-xl bg-emerald-600 flex items-center justify-center font-black text-white text-sm shrink-0 shadow-md">
                 ■
               </span>
@@ -531,12 +545,12 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
       case 'TRUE_FALSE':
         return (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full">
-            <div className="p-6 md:p-8 rounded-3xl border flex flex-col items-center justify-center gap-2 shadow-2xl bg-blue-950/40 border-blue-500/60 shadow-blue-950/50">
+            <div className="p-6 md:p-8 rounded-3xl border flex flex-col items-center justify-center gap-2 shadow-2xl bg-blue-950/50 border-blue-500/60 shadow-blue-950/50 backdrop-blur-sm">
               <span className="text-2xl md:text-3xl font-black text-white tracking-widest uppercase">
                 VERDADEIRO
               </span>
             </div>
-            <div className="p-6 md:p-8 rounded-3xl border flex flex-col items-center justify-center gap-2 shadow-2xl bg-red-950/40 border-red-500/60 shadow-red-950/50">
+            <div className="p-6 md:p-8 rounded-3xl border flex flex-col items-center justify-center gap-2 shadow-2xl bg-red-950/50 border-red-500/60 shadow-red-950/50 backdrop-blur-sm">
               <span className="text-2xl md:text-3xl font-black text-white tracking-widest uppercase">
                 FALSO
               </span>
@@ -546,7 +560,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
 
       case 'FAST_ANSWER':
         return (
-          <div className={`w-full ${themeStyles.card} rounded-3xl p-6 text-center space-y-4 shadow-xl`}>
+          <div className={`w-full ${themeStyles.card} rounded-3xl p-6 text-center space-y-4 shadow-xl backdrop-blur-md`}>
             <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center justify-center mx-auto">
               <Keyboard className="w-7 h-7" />
             </div>
@@ -563,7 +577,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
 
       case 'SLIDER':
         return (
-          <div className={`w-full ${themeStyles.card} rounded-3xl p-6 text-center space-y-5 shadow-xl`}>
+          <div className={`w-full ${themeStyles.card} rounded-3xl p-6 text-center space-y-5 shadow-xl backdrop-blur-md`}>
             <div className="flex items-center justify-center gap-2 text-amber-400">
               <Sliders className="w-5 h-5" />
               <span className="text-xs font-black uppercase tracking-widest">DESLIZE O VALOR CORRETO NO CELULAR</span>
@@ -596,7 +610,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
               ).map((step, idx) => (
                 <div
                   key={idx}
-                  className="p-3.5 rounded-2xl flex items-center gap-3 border bg-slate-900/90 border-purple-500/40 shadow-md min-h-[64px]"
+                  className="p-3.5 rounded-2xl flex items-center gap-3 border bg-slate-900/90 border-purple-500/40 shadow-md min-h-[64px] backdrop-blur-sm"
                 >
                   <span className="w-7 h-7 rounded-xl bg-purple-600/30 border border-purple-500/40 text-purple-300 font-black text-xs flex items-center justify-center shrink-0">
                     ?
@@ -621,12 +635,39 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
   const top3 = leaderboard[2];
   const restOfLeaderboard = leaderboard.slice(3);
 
-  return (
+  if (!isOpen) return null;
+
+  return createPortal(
     <div
-      className={`fixed inset-0 z-50 flex flex-col justify-between p-4 md:p-6 select-none overflow-hidden font-sans h-screen w-screen transition-colors duration-500 ${themeStyles.root}`}
+      className={`fixed inset-0 z-[9999] flex flex-col justify-between p-4 md:p-6 select-none overflow-hidden font-sans h-screen w-screen transition-colors duration-500 ${themeStyles.root}`}
+      style={{ margin: 0, top: 0, left: 0 }}
     >
-      {/* CABEÇALHO */}
-      <header className={`flex items-center justify-between border-b pb-3 shrink-0 ${themeStyles.header}`}>
+      {/* ========================================================================= */}
+      {/* ⚡ FUNDO DE ARENA: LOGOS ESPALHADAS (WALLPAPER PATTERN) COM TOM CLARO */}
+      {/* ========================================================================= */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden select-none z-0">
+        {/* Aura de iluminação superior suave */}
+        <div className={`absolute -top-32 left-1/2 -translate-x-1/2 w-[800px] h-[350px] bg-gradient-to-b ${themeStyles.glowTop} blur-[130px] rounded-full`} />
+
+        {/* Mosaico com várias logos repetidas em tom claro e sutil */}
+        <div
+          className={`absolute inset-0 ${themeStyles.patternOpacity}`}
+          style={{
+            backgroundImage: `url('/logo.png')`,
+            backgroundRepeat: 'repeat',
+            backgroundSize: '160px 160px',
+            backgroundPosition: '0 0',
+            transform: 'rotate(-8deg) scale(1.15)',
+            filter: themeStyles.patternFilter,
+          }}
+        />
+
+        {/* Vinheta radial para manter o centro e as bordas confortáveis para leitura */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/30 pointer-events-none" />
+      </div>
+
+      {/* CABEÇALHO DA ARENA */}
+      <header className={`relative z-10 flex items-center justify-between border-b pb-3 shrink-0 ${themeStyles.header} rounded-2xl px-4 py-2.5`}>
         <div className="flex items-center gap-3">
           <div className="p-2 bg-blue-600 text-white rounded-xl shadow-lg">
             <Sparkles className="w-5 h-5" />
@@ -644,7 +685,6 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Indicador de Ordem Aleatória */}
           <div
             className="p-2 bg-slate-900/80 border border-slate-700 text-emerald-400 rounded-xl flex items-center gap-1.5 text-xs font-bold"
             title="Ordem das perguntas embaralhada aleatoriamente para esta rodada"
@@ -685,10 +725,10 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
       </header>
 
       {/* ÁREA CENTRAL */}
-      <main className="flex-1 my-auto flex flex-col justify-center py-2 max-w-6xl mx-auto w-full overflow-hidden">
+      <main className="relative z-10 flex-1 my-auto flex flex-col justify-center py-2 max-w-6xl mx-auto w-full overflow-hidden">
         {/* ESTÁGIO 1: CONFIGURAÇÃO DE TEMA E SORTEIO */}
         {arenaStage === 'CONFIG' && (
-          <div className="max-w-2xl mx-auto w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl backdrop-blur-xl animate-fade-in text-center">
+          <div className="max-w-2xl mx-auto w-full bg-slate-900/95 border border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl backdrop-blur-xl animate-fade-in text-center">
             <div className="space-y-2">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-black uppercase tracking-wider">
                 <Palette className="w-4 h-4" />
@@ -766,7 +806,6 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
               </div>
             </div>
 
-            {/* Aviso de Embaralhamento Ativo */}
             <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl flex items-center justify-center gap-2 text-xs text-emerald-300 font-bold uppercase tracking-wider">
               <Shuffle className="w-4 h-4 text-emerald-400" />
               <span>Embaralhamento Ativado: Nova sequência sorteada para a turma</span>
@@ -847,7 +886,6 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
                 </div>
               </div>
 
-              {/* RENDERIZAÇÃO CONDICIONAL POR MODALIDADE */}
               {(() => {
                 const stats = quizResults?.answerStats || {
                   type: questionType,
@@ -1224,7 +1262,10 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
                   onOpenFinalReport && (
                     <button
                       type="button"
-                      onClick={onOpenFinalReport}
+                      onClick={() => {
+                        onClose();
+                        onOpenFinalReport();
+                      }}
                       className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-6 py-3 rounded-xl text-xs shadow-lg flex items-center gap-2 cursor-pointer transition-transform active:scale-95 uppercase tracking-wider"
                     >
                       <FileSpreadsheet className="w-4 h-4" />
@@ -1319,7 +1360,7 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
       </main>
 
       {/* RODAPÉ */}
-      <footer className={`flex items-center justify-between border-t pt-2 text-[10px] shrink-0 ${themeStyles.footer}`}>
+      <footer className={`relative z-10 flex items-center justify-between border-t pt-2 text-[10px] shrink-0 ${themeStyles.footer} rounded-xl px-4 py-2`}>
         <div className="flex items-center gap-3">
           <span className="uppercase font-bold">MyClassPluss • Apresentação de Telão</span>
           <span className="hidden sm:inline text-slate-500">•</span>
@@ -1329,7 +1370,8 @@ export const InteractiveArenaModal: React.FC<InteractiveArenaModalProps> = ({
         </div>
         <span className="uppercase font-bold">Pressione ESC para sair da tela cheia</span>
       </footer>
-    </div>
+    </div>,
+    document.body
   );
 };
 

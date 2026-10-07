@@ -59,22 +59,49 @@ interface SubjectReport {
   practices: ActivityItem[];
 }
 
+// ⚡ Função resiliente para extrair a identificação do aluno no celular
+const getStoredStudentIdentifier = (): string => {
+  try {
+    // 1. Tenta pelo objeto salvo @MyClassPluss:user
+    const u1 = localStorage.getItem('@MyClassPluss:user');
+    if (u1) {
+      const parsed = JSON.parse(u1);
+      if (parsed.document && String(parsed.document).trim()) return String(parsed.document).trim();
+      if (parsed.id && String(parsed.id).trim()) return String(parsed.id).trim();
+      if (parsed.name && String(parsed.name).trim()) return String(parsed.name).trim();
+    }
+
+    // 2. Tenta pelo objeto salvo user padrão
+    const u2 = localStorage.getItem('user');
+    if (u2) {
+      const parsed = JSON.parse(u2);
+      if (parsed.document && String(parsed.document).trim()) return String(parsed.document).trim();
+      if (parsed.id && String(parsed.id).trim()) return String(parsed.id).trim();
+      if (parsed.name && String(parsed.name).trim()) return String(parsed.name).trim();
+    }
+
+    // 3. Tenta pelas chaves avulsas salvas no formulário de entrada (StudentJoin)
+    const directDoc =
+      localStorage.getItem('@MyClassPluss:studentDocument') ||
+      localStorage.getItem('studentDocument') ||
+      localStorage.getItem('@MyClassPluss:studentId');
+    if (directDoc && directDoc.trim()) return directDoc.trim();
+
+    const directName =
+      localStorage.getItem('@MyClassPluss:studentName') ||
+      localStorage.getItem('studentName');
+    if (directName && directName.trim()) return directName.trim();
+  } catch (e) {
+    return '';
+  }
+  return '';
+};
+
 export const StudentAcademicPortal: React.FC = () => {
   const navigate = useNavigate();
 
-  // 1. Identificação do estudante
-  const storedUser = (() => {
-    try {
-      const u = localStorage.getItem('@MyClassPluss:user');
-      return u ? JSON.parse(u) : null;
-    } catch {
-      return null;
-    }
-  })();
-
-  const defaultIdentifier = storedUser?.document || storedUser?.id || '';
-  const [identifierInput, setIdentifierInput] = useState(defaultIdentifier);
-  const [activeIdentifier, setActiveIdentifier] = useState(defaultIdentifier);
+  const [identifierInput, setIdentifierInput] = useState<string>(getStoredStudentIdentifier);
+  const [activeIdentifier, setActiveIdentifier] = useState<string>(getStoredStudentIdentifier);
 
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<{
@@ -96,6 +123,11 @@ export const StudentAcademicPortal: React.FC = () => {
       setReportData(res.data);
       if (res.data?.subjects?.length > 0) {
         setExpandedSubject(res.data.subjects[0].subjectId);
+      }
+
+      // Salva para consultas futuras no mesmo aparelho
+      if (clean) {
+        localStorage.setItem('@MyClassPluss:studentDocument', clean);
       }
     } catch (err) {
       console.error('[StudentPortal] Erro ao buscar histórico:', err);

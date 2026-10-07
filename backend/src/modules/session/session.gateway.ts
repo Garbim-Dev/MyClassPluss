@@ -285,7 +285,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       const cleanDoc = data.document ? data.document.replace(/\D/g, '').trim() : null;
       const cleanName = data.fullName ? data.fullName.trim() : 'Aluno';
 
-      // ⚡ Busca estrita no banco para reusar o mesmo cadastro e impedir múltiplos IDs
       let userRecord = await (this.prisma.user as any).findFirst({
         where: {
           OR: [
@@ -321,7 +320,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
       const effectiveUserId = userRecord.id;
 
-      // ⚡ Garante a matrícula na turma
       if (foundClass) {
         await this.prisma.enrollment.upsert({
           where: {
@@ -338,8 +336,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         }).catch(() => {});
       }
 
-      // ⚡ PREVENÇÃO DE DUPLICIDADE EM MEMÓRIA:
-      // Remove qualquer entrada anterior com mesmo ID, Documento ou Nome
       for (const existingKey of Object.keys(room.students)) {
         const existingStudent = room.students[existingKey];
         if (
@@ -550,13 +546,21 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
     this.server.to(roomKey).emit('question_launched', questionPayload);
     this.server.to(`room_${roomKey}`).emit('question_launched', questionPayload);
 
-    this.server.to(roomKey).emit('answer_received_count', {
+    // Envia contagem zerada inicial em todas as salas
+    const countPayload = {
       roomKey,
+      classId: room.classId || roomKey,
       totalAnswers: 0,
-    });
+    };
+    this.server.to(roomKey).emit('answer_received_count', countPayload);
+    this.server.to(`room_${roomKey}`).emit('answer_received_count', countPayload);
+    if (room.classId && room.classId !== roomKey) {
+      this.server.to(room.classId).emit('answer_received_count', countPayload);
+      this.server.to(`room_${room.classId}`).emit('answer_received_count', countPayload);
+    }
   }
 
-  // ⚡ 5. ENVIO DE RESPOSTA
+  // ⚡ 5. ENVIO DE RESPOSTA (COM EMISSÃO MULTICANAL CORRIGIDA)
   @SubscribeMessage('submit_answer')
   handleSubmitAnswer(
     @MessageBody()
@@ -652,10 +656,20 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       (h) => h[qIndex] !== undefined,
     ).length;
 
-    this.server.to(roomKey).emit('answer_received_count', {
+    // ⚡ PAYLOAD COMPATÍVEL COM TEACHERDASHBOARD E TELÃO
+    const countPayload = {
       roomKey,
+      classId: room.classId || roomKey,
       totalAnswers: currentQAnswers,
-    });
+    };
+
+    // Notifica em todas as salas ativas possíveis
+    this.server.to(roomKey).emit('answer_received_count', countPayload);
+    this.server.to(`room_${roomKey}`).emit('answer_received_count', countPayload);
+    if (room.classId && room.classId !== roomKey) {
+      this.server.to(room.classId).emit('answer_received_count', countPayload);
+      this.server.to(`room_${room.classId}`).emit('answer_received_count', countPayload);
+    }
   }
 
   // ⚡ 6. FINALIZAR QUESTÃO / PLACAR COM CONSOLIDAÇÃO NA ESCALA OFICIAL (0,0 A 10,0)
@@ -738,7 +752,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
     room.currentQuestionState = null;
     const totalQuestions = Number(data.totalQuestions) || currentQIndex + 1 || 1;
 
-    // ⚡ Consolidação rigorosa para a escala 0 a 10
     const leaderboardPromises = Object.values(room.scores).map(async (s) => {
       const rawUserHistory = room.answersHistory[s.userId] || {};
       const completeAnswersMatrix: { [questionIndex: number]: boolean } = {};
@@ -750,7 +763,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         if (answeredCorrectly) calculatedCorrectCount += 1;
       }
 
-      // ⚡⚡ PONTUAÇÃO DO QUIZ NA ESCALA 0 A 10 (100% acertos = 10.0) ⚡⚡
       let calculatedGrade = 0.0;
       if (totalQuestions > 0) {
         if (calculatedCorrectCount === totalQuestions) {
@@ -871,8 +883,6 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
       correctIndex,
     });
   }
-
-  
 
   // ⚡ 7. VINCULAR SESSÃO E RESULTADOS A UMA TURMA A QUALQUER MOMENTO
   @SubscribeMessage('bind_session_to_class')
@@ -1014,6 +1024,7 @@ export class SessionGateway implements OnGatewayConnection, OnGatewayDisconnect 
         teamId: room.students[uid].teamId || null,
       };
     });
+
     this.server.to(key).emit('leaderboard_reset', { roomKey: key });
   }
 }

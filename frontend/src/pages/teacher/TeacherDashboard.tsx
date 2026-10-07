@@ -71,27 +71,62 @@ export const TeacherDashboard: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { theme } = useTheme();
 
+  // ⚡ LÊ A SUB-ABA TANTO DA URL QUANTO DO SESSIONSTORAGE (Evita reset repentino)
+  const getInitialSubTab = (): AcademicSubTab => {
+    const urlSubTab = searchParams.get('subtab') as AcademicSubTab;
+    const validSubTabs: AcademicSubTab[] = ['institutions', 'courses', 'subjects', 'rooms', 'classes', 'history', 'backup'];
+    if (urlSubTab && validSubTabs.includes(urlSubTab)) return urlSubTab;
+
+    const storedSub = sessionStorage.getItem('@MyClassPluss:academicSubTab') as AcademicSubTab;
+    if (storedSub && validSubTabs.includes(storedSub)) return storedSub;
+
+    return 'institutions';
+  };
+
   const currentTabParam = (searchParams.get('tab') as TabType) || 'academic';
   const [activeTab, setActiveTabState] = useState<TabType>(
     ['dashboard', 'academic', 'quizzes'].includes(currentTabParam) ? currentTabParam : 'academic'
   );
 
-  // Sub-aba ativa dentro da Gestão Acadêmica
-  const [academicSubTab, setAcademicSubTab] = useState<AcademicSubTab>('institutions');
+  const [academicSubTab, setAcademicSubTabState] = useState<AcademicSubTab>(getInitialSubTab);
+
+  // Função controlada para trocar de sub-aba sem perder o estado
+  const handleSubTabChange = (newSubTab: AcademicSubTab) => {
+    setAcademicSubTabState(newSubTab);
+    sessionStorage.setItem('@MyClassPluss:academicSubTab', newSubTab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', 'academic');
+      next.set('subtab', newSubTab);
+      return next;
+    });
+  };
+
+  const handleTabChange = (newTab: TabType) => {
+    setActiveTabState(newTab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', newTab);
+      if (newTab !== 'academic') {
+        next.delete('subtab');
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     const tabFromUrl = searchParams.get('tab') as TabType;
     if (tabFromUrl && ['dashboard', 'academic', 'quizzes'].includes(tabFromUrl)) {
       setActiveTabState(tabFromUrl);
-    } else {
-      setActiveTabState('academic');
+    }
+
+    const subTabFromUrl = searchParams.get('subtab') as AcademicSubTab;
+    const validSubTabs: AcademicSubTab[] = ['institutions', 'courses', 'subjects', 'rooms', 'classes', 'history', 'backup'];
+    if (subTabFromUrl && validSubTabs.includes(subTabFromUrl)) {
+      setAcademicSubTabState(subTabFromUrl);
+      sessionStorage.setItem('@MyClassPluss:academicSubTab', subTabFromUrl);
     }
   }, [searchParams]);
-
-  const handleTabChange = (newTab: TabType) => {
-    setActiveTabState(newTab);
-    setSearchParams({ tab: newTab });
-  };
 
   const [teacherName, setTeacherName] = useState<string>('Carregando...');
   const [teacherEmail, setTeacherEmail] = useState<string>('');
@@ -215,7 +250,8 @@ export const TeacherDashboard: React.FC = () => {
     };
 
     const handleAnswerCount = (data: any) => {
-      if (data.classId === activeClassId) {
+      const targetId = data.classId || data.roomKey;
+      if (targetId === activeClassId || targetId === activeClassData?.code) {
         setAnswersCount(data.totalAnswers || 0);
       }
     };
@@ -662,62 +698,64 @@ export const TeacherDashboard: React.FC = () => {
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <div className="flex items-center bg-slate-900/90 border border-slate-800 p-1.5 rounded-2xl gap-2 shadow-lg flex-wrap">
+            {/* ⚡ CONTAINER DE ABAS COM nowrap PARA NUNCA QUEBRAR EM DUAS LINHAS */}
+            <div className="flex items-center bg-slate-900/90 border border-slate-800 p-1.5 rounded-2xl gap-1.5 shadow-lg flex-nowrap">
               <button
                 onClick={() => handleTabChange('academic')}
                 className={
-                  'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ' +
+                  'flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ' +
                   (activeTab === 'academic'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800/50')
                 }
               >
-                <Building2 className="w-4 h-4 text-blue-400" />
+                <Building2 className="w-4 h-4 text-blue-400 shrink-0" />
                 <span>Gestão Acadêmica</span>
               </button>
 
               <button
                 onClick={() => handleTabChange('quizzes')}
                 className={
-                  'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ' +
+                  'flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ' +
                   (activeTab === 'quizzes'
                     ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-600/30'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800/50')
                 }
               >
-                <Gamepad2 className="w-4 h-4 text-purple-300" />
+                <Gamepad2 className="w-4 h-4 text-purple-300 shrink-0" />
                 <span>Gestão de Questões</span>
               </button>
 
               <button
                 onClick={() => handleTabChange('dashboard')}
                 className={
-                  'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ' +
+                  'flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ' +
                   (activeTab === 'dashboard'
                     ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800/50')
                 }
               >
-                <LayoutDashboard className="w-4 h-4" />
+                <LayoutDashboard className="w-4 h-4 shrink-0" />
                 <span>Visão de Sala</span>
               </button>
             </div>
 
             <ThemeToggle />
 
-            <div className="flex items-center gap-3 bg-slate-900/90 border border-slate-800/90 py-1.5 px-3 rounded-2xl shadow-lg">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center font-black text-xs text-white shadow-md border border-blue-400/30 tracking-wider">
+            {/* CARD DO PERFIL DO INSTRUTOR */}
+            <div className="flex items-center gap-2.5 bg-slate-900/90 border border-slate-800/90 py-1.5 px-3 rounded-2xl shadow-lg shrink-0">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center font-black text-xs text-white shadow-md border border-blue-400/30 tracking-wider shrink-0">
                 {getInitials(teacherName)}
               </div>
 
-              <div className="text-left pr-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-bold text-white max-w-[150px] truncate block">
+              <div className="text-left pr-1 min-w-0">
+                <div className="flex items-center gap-1">
+                  <span className="text-xs font-bold text-white max-w-[130px] truncate block">
                     {teacherName}
                   </span>
                   <UserCheck className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                 </div>
-                <span className="text-[10px] text-slate-400 block font-medium">
+                <span className="text-[10px] text-slate-400 block font-medium truncate">
                   Professor/Instrutor
                 </span>
               </div>
@@ -725,7 +763,7 @@ export const TeacherDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800/80 rounded-xl transition-colors cursor-pointer ml-1"
+                className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-800/80 rounded-xl transition-colors cursor-pointer"
                 title="Sair do MyClassPluss"
               >
                 <LogOut className="w-4 h-4" />
@@ -739,7 +777,7 @@ export const TeacherDashboard: React.FC = () => {
           <div className="space-y-6 animate-fade-in">
             <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800 p-2 rounded-2xl w-fit flex-wrap">
               <button
-                onClick={() => setAcademicSubTab('institutions')}
+                onClick={() => handleSubTabChange('institutions')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'institutions'
                     ? 'bg-blue-600 text-white shadow-md'
@@ -751,7 +789,7 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setAcademicSubTab('courses')}
+                onClick={() => handleSubTabChange('courses')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'courses'
                     ? 'bg-purple-600 text-white shadow-md'
@@ -763,7 +801,7 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setAcademicSubTab('subjects')}
+                onClick={() => handleSubTabChange('subjects')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'subjects'
                     ? 'bg-emerald-600 text-white shadow-md'
@@ -775,7 +813,7 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setAcademicSubTab('rooms')}
+                onClick={() => handleSubTabChange('rooms')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'rooms'
                     ? 'bg-amber-600 text-white shadow-md'
@@ -787,7 +825,7 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setAcademicSubTab('classes')}
+                onClick={() => handleSubTabChange('classes')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'classes'
                     ? 'bg-indigo-600 text-white shadow-md'
@@ -799,7 +837,7 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setAcademicSubTab('backup')}
+                onClick={() => handleSubTabChange('backup')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'backup'
                     ? 'bg-rose-600 text-white shadow-md'
@@ -811,7 +849,7 @@ export const TeacherDashboard: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setAcademicSubTab('history')}
+                onClick={() => handleSubTabChange('history')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   academicSubTab === 'history'
                     ? 'bg-violet-600 text-white shadow-md'
@@ -1355,7 +1393,7 @@ export const TeacherDashboard: React.FC = () => {
           onNextQuestion={handleNextQuestion}
           onResetScores={handleResetScores}
           onForceFinishTime={handleForceFinish}
-          onOpenFinalReport={() => handleOpenClassReport(activeClassId || undefined)}
+          onOpenFinalReport={() => {setIsArenaOpen(false); setQuizRunning(false);handleOpenClassReport(activeClassId || undefined)}}
           optRed={selectedQuiz?.questions?.[currentQuestionIndex]?.options?.[0]?.text || ''}
           optBlue={selectedQuiz?.questions?.[currentQuestionIndex]?.options?.[1]?.text || ''}
           optYellow={selectedQuiz?.questions?.[currentQuestionIndex]?.options?.[2]?.text || ''}

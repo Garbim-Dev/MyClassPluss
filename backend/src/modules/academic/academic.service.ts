@@ -777,23 +777,38 @@ export class AcademicService {
     };
   }
 
-  // ⚡ BOLETIM E RELATÓRIO FORMATIVO INDIVIDUAL DO ALUNO
+  // ⚡ BOLETIM E RELATÓRIO FORMATIVO INDIVIDUAL DO ALUNO (BUSCA ROBUSTA)
   async getStudentReport(userId: string) {
-    let userRecord = await (this.prisma.user as any).findFirst({
+    if (!userId || userId.trim() === '' || userId === 'undefined' || userId === 'null') {
+      return { student: null, subjects: [], totalSubmissions: 0 };
+    }
+
+    const cleanInput = userId.trim();
+    const cleanDoc = cleanInput.replace(/\D/g, '');
+
+    // 1. Encontra o usuário por qualquer identificador possível
+    const userRecords = await (this.prisma.user as any).findMany({
       where: {
         OR: [
-          { id: userId },
-          { document: userId },
-          { email: `${userId}@aluno.myclasspluss.com` },
+          { id: cleanInput },
+          ...(cleanDoc ? [{ document: cleanDoc }] : []),
+          { email: { equals: cleanInput, mode: 'insensitive' } },
+          { email: { startsWith: cleanDoc } },
+          { name: { equals: cleanInput, mode: 'insensitive' } },
         ],
       },
-      select: { id: true, name: true, document: true, email: true },
     });
 
-    const targetUserId = userRecord?.id || userId;
+    const userRecord = userRecords[0] || null;
+    const targetUserIds = userRecords.length > 0 
+      ? userRecords.map((u: any) => u.id) 
+      : [cleanInput];
 
+    // 2. Busca todas as submissões de avaliações, quizzes e práticas deste aluno
     const submissions = await this.prisma.examSubmission.findMany({
-      where: { userId: targetUserId },
+      where: {
+        userId: { in: targetUserIds },
+      },
       include: {
         quiz: {
           include: {
@@ -826,7 +841,7 @@ export class AcademicService {
     }>();
 
     submissions.forEach((sub: any) => {
-      const subjectId = sub.quiz?.subjectId || 'geral';
+      const subjectId = sub.quiz?.subjectId || sub.quiz?.subject?.id || 'geral';
       const subjectName = sub.quiz?.subject?.name || 'Conhecimentos Gerais';
       const courseName = sub.class?.course?.name || 'Treinamento Técnico';
 
@@ -850,7 +865,7 @@ export class AcademicService {
       const activityItem = {
         submissionId: sub.id,
         quizId: sub.quizId,
-        title: sub.quiz?.title || 'Avaliação',
+        title: sub.quiz?.title || 'Avaliação / Atividade',
         type: qType || 'AVALIACAO',
         score: grade,
         totalCorrect: sub.totalCorrect,
@@ -867,9 +882,9 @@ export class AcademicService {
         })),
       };
 
-      if (qType === 'AVALIACAO' || qType === 'AVALIAÇAO') {
+      if (qType.includes('AVALIA')) {
         group.exams.push(activityItem);
-      } else if (qType === 'ATIVIDADE') {
+      } else if (qType.includes('ATIVIDADE') || qType.includes('PRAT')) {
         group.practices.push(activityItem);
       } else {
         group.quizzes.push(activityItem);
@@ -900,7 +915,7 @@ export class AcademicService {
     });
 
     return {
-      student: userRecord,
+      student: userRecord || { name: cleanInput, document: cleanDoc },
       subjects: subjectsReport,
       totalSubmissions: submissions.length,
     };
